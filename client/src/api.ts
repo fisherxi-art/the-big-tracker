@@ -52,21 +52,30 @@ async function j<T>(path: string, init?: RequestInit): Promise<T> {
       typeof data === "object" && data !== null && "error" in data
         ? String((data as { error?: unknown }).error ?? "")
         : "";
-    const snippet = raw.trim().startsWith("<") ? "" : raw.slice(0, 280);
-    const base = fromJson || snippet || res.statusText || "Request failed";
+    const trimmed = raw.trim();
+    const isHtml = trimmed.startsWith("<");
+    const snippet = !isHtml && trimmed ? trimmed.slice(0, 280) : "";
+    /** HTTP/2 often has empty statusText; never rely on it alone. */
+    const statusLine = res.statusText?.trim() || `HTTP ${res.status}`;
+    let message = fromJson || snippet || statusLine;
+    if (isHtml && !fromJson) {
+      message = `${statusLine} — server returned an error page instead of JSON (often timeout, 502, or cold start). Retry; check Render logs and OpenRouter.`;
+    } else if (!message.trim()) {
+      message = `HTTP ${res.status}`;
+    }
 
     if (res.status === 404) {
       const isUpstream =
-        /openrouter|endpoint|image input|model/i.test(base) &&
-        !/api is not on this origin/i.test(base);
+        /openrouter|endpoint|image input|model/i.test(message) &&
+        !/api is not on this origin/i.test(message);
       if (isUpstream) {
-        throw new Error(base || `HTTP ${res.status}`);
+        throw new Error(message || `HTTP ${res.status}`);
       }
       throw new Error(
-        `${base} — HTTP 404 on ${path}. This usually means the API is not on this origin (e.g. run \`npm run dev\` so one Node process serves both UI and /api; do not use \`vite\` alone). On production, redeploy the server after adding /api/ai/parse-paste.`
+        `${message} — HTTP 404 on ${path}. This usually means the API is not on this origin (e.g. run \`npm run dev\` so one Node process serves both UI and /api; do not use \`vite\` alone). On production, redeploy the server after adding /api/ai/parse-paste.`
       );
     }
-    throw new Error(base || `HTTP ${res.status}`);
+    throw new Error(message);
   }
   return data as T;
 }
