@@ -2,38 +2,40 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Day (light) — default when .dark is absent */
+/* Bloomberg-inspired: dense data UI, orange accent, near-black dark / clean light */
+
 :root {
   color-scheme: light;
-  --background: 220 20% 98%;
-  --foreground: 220 18% 15%;
-  --border: 220 13% 86%;
+  --background: 0 0% 99%;
+  --foreground: 0 0% 7%;
+  --border: 0 0% 82%;
   --card: 0 0% 100%;
-  --card-foreground: 220 18% 15%;
-  --muted: 220 14% 94%;
-  --muted-foreground: 220 9% 38%;
-  --primary: 215 58% 45%;
-  --primary-foreground: 0 0% 98%;
-  --accent: 220 14% 92%;
-  --accent-foreground: 220 18% 15%;
+  --card-foreground: 0 0% 7%;
+  --muted: 0 0% 94%;
+  --muted-foreground: 0 0% 38%;
+  --primary: 24 100% 50%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 0 0% 93%;
+  --accent-foreground: 0 0% 7%;
   --destructive: 0 72% 42%;
+  --bloomberg-header: 0 0% 100%;
 }
 
-/* Night (dark) */
 .dark {
   color-scheme: dark;
-  --background: 220 14% 8%;
-  --foreground: 220 10% 92%;
-  --border: 220 10% 18%;
-  --card: 220 12% 11%;
-  --card-foreground: 220 10% 92%;
-  --muted: 220 10% 22%;
-  --muted-foreground: 220 8% 58%;
-  --primary: 215 55% 55%;
-  --primary-foreground: 0 0% 98%;
-  --accent: 220 10% 19%;
-  --accent-foreground: 220 10% 92%;
-  --destructive: 0 72% 48%;
+  --background: 0 0% 4%;
+  --foreground: 0 0% 93%;
+  --border: 0 0% 16%;
+  --card: 0 0% 7%;
+  --card-foreground: 0 0% 93%;
+  --muted: 0 0% 11%;
+  --muted-foreground: 0 0% 58%;
+  --primary: 24 100% 50%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 0 0% 12%;
+  --accent-foreground: 0 0% 93%;
+  --destructive: 0 65% 50%;
+  --bloomberg-header: 0 0% 5%;
 }
 
 body {
@@ -44,7 +46,8 @@ body {
   padding-right: env(safe-area-inset-right, 0);
   background: hsl(var(--background));
   color: hsl(var(--foreground));
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  font-feature-settings: "tnum" 1, "lnum" 1;
   -webkit-font-smoothing: antialiased;
   touch-action: manipulation;
 }

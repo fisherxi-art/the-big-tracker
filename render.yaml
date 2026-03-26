@@ -30,5 +30,8 @@ services:
         value: "/var/data"
       - key: OPENROUTER_API_KEY
         sync: false
+      # Pin text model in production (dashboard value overrides if set). dotenv does not override OS env.
+      - key: OPENROUTER_MODEL
+        value: qwen/qwen3.5-flash-02-23
       - key: PUBLIC_URL
         sync: false

@@ -45,15 +45,15 @@ function IconMoon({ className }: { className?: string }) {
 }
 
 function btnGhost() {
-  return "inline-flex items-center justify-center rounded-lg border border-border bg-transparent px-2.5 sm:px-3 py-2 text-sm font-medium min-h-[40px] sm:min-h-[44px] touch-manipulation active:opacity-80 transition-opacity";
+  return "inline-flex items-center justify-center rounded-sm border border-border bg-transparent px-2.5 sm:px-3 py-2 text-sm font-medium min-h-[40px] sm:min-h-[44px] touch-manipulation active:opacity-80 transition-opacity";
 }
 
 function btnPrimary() {
-  return "inline-flex items-center justify-center rounded-lg bg-primary px-3 sm:px-4 py-2.5 sm:py-3 text-sm font-semibold text-primary-foreground min-h-[44px] sm:min-h-[48px] touch-manipulation active:opacity-90 transition-opacity disabled:opacity-50 disabled:pointer-events-none w-full sm:w-auto";
+  return "inline-flex items-center justify-center rounded-sm bg-primary px-3 sm:px-4 py-2.5 sm:py-3 text-sm font-semibold text-primary-foreground min-h-[44px] sm:min-h-[48px] touch-manipulation active:opacity-90 transition-opacity disabled:opacity-50 disabled:pointer-events-none w-full sm:w-auto shadow-sm";
 }
 
 function inputClass() {
-  return "w-full rounded-lg border border-border bg-card px-2.5 sm:px-3 py-2 sm:py-3 text-base sm:text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary";
+  return "w-full rounded-sm border border-border bg-card px-2.5 sm:px-3 py-2 sm:py-3 text-base sm:text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary focus:ring-offset-0";
 }
 
 function ratingTone(rating: string) {
@@ -233,7 +233,7 @@ function SourceImages({ stored }: { stored: string }) {
           <button
             key={i}
             type="button"
-            className="w-full rounded-lg border border-border bg-muted/20 overflow-hidden text-left focus:outline-none focus:ring-2 focus:ring-primary touch-manipulation active:opacity-90"
+            className="w-full rounded-sm border border-border bg-muted/20 overflow-hidden text-left focus:outline-none focus:ring-2 focus:ring-primary touch-manipulation active:opacity-90"
             onClick={() => setLightbox(u)}
             aria-label="Open image fullscreen"
           >
@@ -311,14 +311,61 @@ function meetingMatchesQuery(m: Meeting, q: string): boolean {
   return hay.includes(q);
 }
 
-export default function App() {
-  const [tab, setTab] = useState<Tab>("research");
-  const [health, setHealth] = useState<{
+function AiModelsBar({
+  health,
+}: {
+  health: {
     openrouter?: boolean;
     openRouterModel?: string;
     openRouterVisionModel?: string;
     openRouterWebSearch?: boolean;
-  } | null>(null);
+  } | null;
+}) {
+  if (!health) return null;
+  return (
+    <div
+      className="border-b border-border bg-muted/50"
+      role="region"
+      aria-label="AI model configuration"
+    >
+      <div className="mx-auto max-w-[1400px] px-2.5 sm:px-4 py-2 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-baseline sm:gap-x-8 sm:gap-y-1 text-[11px] sm:text-xs">
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="font-semibold uppercase tracking-widest text-[10px] text-muted-foreground">
+            AI models
+          </span>
+          <span
+            className={`h-2 w-2 shrink-0 rounded-sm ${
+              health.openrouter ? "bg-emerald-500" : "bg-amber-500"
+            }`}
+            title={health.openrouter ? "OpenRouter configured" : "Missing OPENROUTER_API_KEY"}
+            aria-hidden
+          />
+          <span className="text-muted-foreground">{health.openrouter ? "Ready" : "No API key"}</span>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 sm:gap-y-1 min-w-0 flex-1 font-mono text-[11px] leading-snug">
+          <span className="text-muted-foreground font-sans uppercase tracking-wide text-[10px] sm:pt-0.5">
+            Text
+          </span>
+          <code className="text-foreground break-all block">{health.openRouterModel ?? "—"}</code>
+          <span className="text-muted-foreground font-sans uppercase tracking-wide text-[10px] sm:pt-0.5">
+            Vision
+          </span>
+          <code className="text-foreground break-all block">{health.openRouterVisionModel ?? "—"}</code>
+          <span className="text-muted-foreground font-sans uppercase tracking-wide text-[10px] sm:pt-0.5">
+            Web search
+          </span>
+          <span className="text-foreground tabular-nums font-sans">
+            {health.openRouterWebSearch ? "On" : "Off"}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>("research");
+  const [health, setHealth] = useState<Parameters<typeof AiModelsBar>[0]["health"]>(null);
   const [research, setResearch] = useState<Research[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [loading, setLoading] = useState(true);
@@ -603,24 +650,27 @@ export default function App() {
 
   return (
     <div className="min-h-[100dvh] flex flex-col bg-background pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-      <header className="border-b border-border bg-card/90 backdrop-blur-md sticky top-0 z-20 pt-[env(safe-area-inset-top,0)]">
-        <div className="mx-auto max-w-[1400px] px-2.5 sm:px-4 py-2 sm:py-2.5 flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
-          <div className="min-w-0">
-            <h1 className="text-base sm:text-lg md:text-xl font-semibold tracking-tight truncate">TheBigTracker</h1>
+      <header className="sticky top-0 z-20 border-b-2 border-primary bg-[hsl(var(--bloomberg-header))] pt-[env(safe-area-inset-top,0)] shadow-[0_1px_0_0_hsl(var(--border))]">
+        <div className="mx-auto max-w-[1400px] px-2.5 sm:px-4 py-2.5 sm:py-3 flex flex-wrap items-center justify-between gap-2 sm:gap-3">
+          <div className="min-w-0 border-l-[3px] border-primary pl-3">
+            <h1 className="text-base sm:text-lg md:text-xl font-bold tracking-tight truncate text-foreground">
+              TheBigTracker
+            </h1>
+            <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground mt-0.5 hidden sm:block">
+              Research
+            </p>
           </div>
           <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {health && (
               <span
-                className={`text-[10px] sm:text-xs px-2 py-1 rounded-md border max-w-[100px] sm:max-w-none truncate ${
+                className={`text-[10px] sm:text-xs px-2 py-1 rounded-sm border font-medium tabular-nums max-w-[120px] sm:max-w-none truncate ${
                   health.openrouter
-                    ? "border-emerald-600/80 text-emerald-900 bg-emerald-100 dark:border-emerald-700 dark:text-emerald-300 dark:bg-emerald-900/40"
-                    : "border-amber-600/80 text-amber-950 bg-amber-100 dark:border-amber-700 dark:text-amber-300 dark:bg-amber-900/40"
+                    ? "border-emerald-700/50 text-emerald-800 bg-emerald-100/90 dark:border-emerald-600/50 dark:text-emerald-200 dark:bg-emerald-950/60"
+                    : "border-amber-700/50 text-amber-950 bg-amber-100/90 dark:border-amber-600/50 dark:text-amber-200 dark:bg-amber-950/50"
                 }`}
-                title={[health.openRouterModel, health.openRouterVisionModel && `Vision: ${health.openRouterVisionModel}`]
-                  .filter(Boolean)
-                  .join(" · ")}
+                title={health.openrouter ? "OpenRouter API key configured" : "Set OPENROUTER_API_KEY on the server"}
               >
-                {health.openrouter ? "AI ready" : "No API key"}
+                {health.openrouter ? "API OK" : "No API key"}
               </span>
             )}
             <button
@@ -639,8 +689,10 @@ export default function App() {
         </div>
       </header>
 
+      <AiModelsBar health={health} />
+
       <div className="flex-1 flex flex-col min-h-0 mx-auto max-w-[1400px] w-full">
-        <section className="shrink-0 border-b border-border bg-muted/20 px-2.5 sm:px-4 py-2 sm:py-3">
+        <section className="shrink-0 border-b border-border bg-muted/30 px-2.5 sm:px-4 py-2 sm:py-3">
           <label htmlFor="paste-main" className="sr-only">
             Paste area
           </label>
@@ -657,7 +709,7 @@ export default function App() {
             }}
           />
           <div
-            className="rounded-lg border border-dashed border-border/80 bg-card/30 p-1"
+            className="rounded-sm border border-dashed border-border/90 bg-card/40 p-1.5"
             onDrop={onDropImages}
             onDragOver={onDragOverImages}
           >
@@ -705,7 +757,7 @@ export default function App() {
             </label>
           </div>
           {showAiDebug && parsePasteDebug?.parsePasteSystemPrompt ? (
-            <details className="mt-1.5 sm:mt-2 rounded-lg border border-border bg-card/80 p-2 text-[11px]" open>
+            <details className="mt-1.5 sm:mt-2 rounded-sm border border-border bg-card/80 p-2 text-[11px]" open>
               <summary className="cursor-pointer font-medium text-muted-foreground">
                 Parse-paste system prompt
                 {parsePasteDebug.userMessageChars != null
@@ -718,7 +770,7 @@ export default function App() {
             </details>
           ) : null}
           {showAiDebug && parsePasteDebug?.parseResearchSystemPrompt ? (
-            <details className="mt-1.5 sm:mt-2 rounded-lg border border-border bg-card/80 p-2 text-[11px]">
+            <details className="mt-1.5 sm:mt-2 rounded-sm border border-border bg-card/80 p-2 text-[11px]">
               <summary className="cursor-pointer font-medium text-muted-foreground">
                 Parse-research system prompt (API only)
               </summary>
@@ -731,7 +783,7 @@ export default function App() {
             <div className="grid grid-cols-2 gap-1.5 sm:flex sm:flex-wrap sm:items-stretch sm:gap-2">
               <button
                 type="button"
-                className={`rounded-lg px-2 py-2 text-xs font-medium touch-manipulation active:opacity-90 transition-colors min-h-[40px] sm:min-h-0 sm:rounded-md sm:px-2.5 sm:py-1.5 ${
+                className={`rounded-sm px-2 py-2 text-xs font-medium touch-manipulation active:opacity-90 transition-colors min-h-[40px] sm:min-h-0 sm:px-2.5 sm:py-1.5 ${
                   tab === "research"
                     ? "bg-accent text-accent-foreground ring-1 ring-border"
                     : "bg-muted/50 text-muted-foreground hover:bg-muted"
@@ -749,7 +801,7 @@ export default function App() {
               </button>
               <button
                 type="button"
-                className={`rounded-lg px-2 py-2 text-xs font-medium touch-manipulation active:opacity-90 transition-colors min-h-[40px] sm:min-h-0 sm:rounded-md sm:px-2.5 sm:py-1.5 ${
+                className={`rounded-sm px-2 py-2 text-xs font-medium touch-manipulation active:opacity-90 transition-colors min-h-[40px] sm:min-h-0 sm:px-2.5 sm:py-1.5 ${
                   tab === "meetings"
                     ? "bg-accent text-accent-foreground ring-1 ring-border"
                     : "bg-muted/50 text-muted-foreground hover:bg-muted"
@@ -786,12 +838,12 @@ export default function App() {
 
         <main className="flex-1 flex flex-col min-h-0 overflow-y-auto overscroll-contain px-2.5 py-2 sm:p-4 md:p-6 gap-2 sm:gap-3">
             {success && (
-              <div className="rounded-lg border border-emerald-300 bg-emerald-50 text-emerald-900 px-2.5 py-1.5 text-xs sm:text-sm shrink-0 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+              <div className="rounded-sm border border-emerald-300 bg-emerald-50 text-emerald-900 px-2.5 py-1.5 text-xs sm:text-sm shrink-0 dark:border-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
                 {success}
               </div>
             )}
             {err && (
-              <div className="rounded-lg border border-red-300 bg-red-50 text-red-900 px-2.5 py-1.5 text-xs sm:text-sm shrink-0 dark:border-red-800 dark:bg-red-950/50 dark:text-red-200">
+              <div className="rounded-sm border border-red-300 bg-red-50 text-red-900 px-2.5 py-1.5 text-xs sm:text-sm shrink-0 dark:border-red-800 dark:bg-red-950/50 dark:text-red-200">
                 {err}
               </div>
             )}
@@ -840,15 +892,17 @@ function ResearchBoard({
       }`}
     >
       <div className={`flex flex-col min-h-0 gap-2 sm:gap-3 ${selected ? "lg:col-span-7" : ""}`}>
-        <h2 className="text-xs sm:text-sm font-medium text-muted-foreground shrink-0">Notes</h2>
+        <h2 className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest text-muted-foreground shrink-0">
+          Notes
+        </h2>
         <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2 content-start">
           {items.map((r) => (
             <button
               key={r.id}
               type="button"
               onClick={() => onSelect(r)}
-              className={`text-left rounded-lg sm:rounded-xl border p-3 sm:p-4 min-h-[64px] sm:min-h-[72px] touch-manipulation active:opacity-90 transition-opacity ${
-                selected?.id === r.id ? "border-primary ring-2 ring-primary/30 bg-muted/20" : "border-border hover:bg-muted/15"
+              className={`text-left rounded-sm border p-3 sm:p-4 min-h-[64px] sm:min-h-[72px] touch-manipulation active:opacity-90 transition-opacity ${
+                selected?.id === r.id ? "border-primary ring-1 ring-primary/40 bg-muted/25" : "border-border hover:bg-muted/15"
               }`}
             >
               <div className="flex items-start justify-between gap-1.5 sm:gap-2 mb-1 sm:mb-2">
@@ -868,7 +922,7 @@ function ResearchBoard({
             </button>
           ))}
           {items.length === 0 && (
-            <p className="text-xs sm:text-sm text-muted-foreground col-span-full py-6 sm:py-10 text-center border border-dashed border-border rounded-lg sm:rounded-xl px-3 sm:px-4">
+            <p className="text-xs sm:text-sm text-muted-foreground col-span-full py-6 sm:py-10 text-center border border-dashed border-border rounded-sm px-3 sm:px-4">
               {totalCount > 0
                 ? "No notes match your search."
                 : "No research notes yet. Paste text above and tap Identify & save."}
@@ -877,12 +931,12 @@ function ResearchBoard({
         </div>
       </div>
       {selected ? (
-        <div className="lg:col-span-5 flex flex-col min-h-0 border border-border rounded-lg sm:rounded-xl bg-card/50 overflow-hidden lg:sticky lg:top-4 lg:self-start max-h-[min(58vh,520px)] sm:max-h-[65vh] lg:max-h-[min(75vh,900px)]">
-          <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-border shrink-0 flex items-center justify-between gap-2">
-            <h3 className="text-xs sm:text-sm font-semibold">Detail</h3>
+        <div className="lg:col-span-5 flex flex-col min-h-0 border border-border rounded-sm bg-card/50 overflow-hidden lg:sticky lg:top-4 lg:self-start max-h-[min(58vh,520px)] sm:max-h-[65vh] lg:max-h-[min(75vh,900px)]">
+          <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-border shrink-0 flex items-center justify-between gap-2 bg-muted/20">
+            <h3 className="text-xs sm:text-sm font-semibold uppercase tracking-wide text-muted-foreground">Detail</h3>
             <button
               type="button"
-              className="text-[11px] sm:text-xs font-medium text-red-700 border border-red-300 rounded-lg px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[36px] sm:min-h-[40px] touch-manipulation active:opacity-80 dark:text-red-400 dark:border-red-800/80"
+              className="text-[11px] sm:text-xs font-medium text-red-700 border border-red-300 rounded-sm px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[36px] sm:min-h-[40px] touch-manipulation active:opacity-80 dark:text-red-400 dark:border-red-800/80"
               onClick={() => onDelete(selected.id)}
             >
               Delete
@@ -960,7 +1014,7 @@ function ResearchDetail({ r }: { r: Research }) {
       {r.rawText ? (
         <div>
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">Full text</p>
-          <pre className="text-xs whitespace-pre-wrap break-words font-sans leading-relaxed text-foreground/90 bg-muted/30 rounded-lg p-2 sm:p-3 max-h-[min(42vh,360px)] sm:max-h-[min(50vh,420px)] overflow-y-auto">
+          <pre className="text-xs whitespace-pre-wrap break-words font-sans leading-relaxed text-foreground/90 bg-muted/30 rounded-sm p-2 sm:p-3 max-h-[min(42vh,360px)] sm:max-h-[min(50vh,420px)] overflow-y-auto">
             {r.rawText}
           </pre>
         </div>
@@ -990,15 +1044,17 @@ function MeetingsBoard({
       }`}
     >
       <div className={`flex flex-col min-h-0 gap-2 sm:gap-3 ${selected ? "lg:col-span-7" : ""}`}>
-        <h2 className="text-xs sm:text-sm font-medium text-muted-foreground shrink-0">Meetings</h2>
+        <h2 className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest text-muted-foreground shrink-0">
+          Meetings
+        </h2>
         <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2 content-start">
           {items.map((m) => (
             <button
               key={m.id}
               type="button"
               onClick={() => onSelect(m)}
-              className={`text-left rounded-lg sm:rounded-xl border p-3 sm:p-4 min-h-[72px] sm:min-h-[80px] touch-manipulation active:opacity-90 transition-opacity ${
-                selected?.id === m.id ? "border-primary ring-2 ring-primary/30 bg-muted/20" : "border-border hover:bg-muted/15"
+              className={`text-left rounded-sm border p-3 sm:p-4 min-h-[72px] sm:min-h-[80px] touch-manipulation active:opacity-90 transition-opacity ${
+                selected?.id === m.id ? "border-primary ring-1 ring-primary/40 bg-muted/25" : "border-border hover:bg-muted/15"
               }`}
             >
               <p className="font-semibold text-[13px] sm:text-sm leading-snug line-clamp-3 mb-1 sm:mb-2">{m.eventName || "—"}</p>
@@ -1010,7 +1066,7 @@ function MeetingsBoard({
             </button>
           ))}
           {items.length === 0 && (
-            <p className="text-xs sm:text-sm text-muted-foreground col-span-full py-6 sm:py-10 text-center border border-dashed border-border rounded-lg sm:rounded-xl px-3 sm:px-4">
+            <p className="text-xs sm:text-sm text-muted-foreground col-span-full py-6 sm:py-10 text-center border border-dashed border-border rounded-sm px-3 sm:px-4">
               {totalCount > 0
                 ? "No meetings match your search."
                 : "No meetings yet. Paste an invite above and tap Identify & save."}
@@ -1019,12 +1075,12 @@ function MeetingsBoard({
         </div>
       </div>
       {selected ? (
-        <div className="lg:col-span-5 flex flex-col min-h-0 border border-border rounded-lg sm:rounded-xl bg-card/50 overflow-hidden lg:sticky lg:top-4 lg:self-start max-h-[min(58vh,520px)] sm:max-h-[65vh] lg:max-h-[min(75vh,900px)]">
-          <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-border shrink-0 flex items-center justify-between gap-2">
-            <h3 className="text-xs sm:text-sm font-semibold">Detail</h3>
+        <div className="lg:col-span-5 flex flex-col min-h-0 border border-border rounded-sm bg-card/50 overflow-hidden lg:sticky lg:top-4 lg:self-start max-h-[min(58vh,520px)] sm:max-h-[65vh] lg:max-h-[min(75vh,900px)]">
+          <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-border shrink-0 flex items-center justify-between gap-2 bg-muted/20">
+            <h3 className="text-xs sm:text-sm font-semibold uppercase tracking-wide text-muted-foreground">Detail</h3>
             <button
               type="button"
-              className="text-[11px] sm:text-xs font-medium text-red-700 border border-red-300 rounded-lg px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[36px] sm:min-h-[40px] touch-manipulation active:opacity-80 dark:text-red-400 dark:border-red-800/80"
+              className="text-[11px] sm:text-xs font-medium text-red-700 border border-red-300 rounded-sm px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[36px] sm:min-h-[40px] touch-manipulation active:opacity-80 dark:text-red-400 dark:border-red-800/80"
               onClick={() => onDelete(selected.id)}
             >
               Delete
@@ -1079,7 +1135,7 @@ function MeetingDetail({ m }: { m: Meeting }) {
           <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Source</p>
           {m.sourceType ? <p className="text-xs text-muted-foreground mb-2">{m.sourceType}</p> : null}
           {m.sourceContent ? (
-            <pre className="text-xs whitespace-pre-wrap break-words font-sans leading-relaxed bg-muted/30 rounded-lg p-2 sm:p-3 max-h-[min(38vh,320px)] sm:max-h-[min(45vh,380px)] overflow-y-auto">
+            <pre className="text-xs whitespace-pre-wrap break-words font-sans leading-relaxed bg-muted/30 rounded-sm p-2 sm:p-3 max-h-[min(38vh,320px)] sm:max-h-[min(45vh,380px)] overflow-y-auto">
               {m.sourceContent}
             </pre>
           ) : null}
