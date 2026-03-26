@@ -27,7 +27,7 @@ function resolveDbPath() {
 }
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || "minimax/minimax-m2.1";
+const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || "qwen/qwen3.5-flash-02-23";
 /**
  * Vision / OCR only. Must accept image_url on OpenRouter (see openrouter.ai/models, filter: image).
  * Default: DeepSeek V3.2 — if OCR fails, try another vision id in OPENROUTER_VISION_MODEL.
