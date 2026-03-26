@@ -20,9 +20,10 @@ services:
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
-      # 22.13+ enables node:sqlite without --experimental-sqlite; scripts still pass the flag for 22.5–22.12.
+      # 22.16+ includes node:sqlite fix for "statement has been finalized" (GC + prepared statements).
+      # npm scripts still pass --experimental-sqlite for older local Node 22.5–22.12.
       - key: NODE_VERSION
-        value: "22.13.1"
+        value: "22.16.0"
       - key: DATABASE_PATH
         value: "/var/data/app.db"
       - key: DATA_DIR

@@ -3,6 +3,17 @@ import { existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 
 /**
+ * Keep prepared statements reachable so V8 cannot GC them mid-query (fixes
+ * "statement has been finalized" on node:sqlite before Node 22.16 / 24).
+ * @param {DatabaseSync} db
+ * @param {unknown[]} stmts
+ */
+function retainStatements(db, stmts) {
+  if (!db.__sqliteStmtRefs) db.__sqliteStmtRefs = [];
+  db.__sqliteStmtRefs.push(...stmts);
+}
+
+/**
  * @param {string} dbPath Absolute path to SQLite file
  */
 export function openDb(dbPath) {
@@ -124,6 +135,8 @@ export function researchRepo(db) {
   `);
 
   const del = db.prepare(`DELETE FROM research WHERE id = ?`);
+
+  retainStatements(db, [list, get, insert, update, del]);
 
   function rowToApi(r) {
     if (!r) return null;
@@ -278,6 +291,8 @@ export function meetingsRepo(db) {
   `);
 
   const del = db.prepare(`DELETE FROM meetings WHERE id = ?`);
+
+  retainStatements(db, [list, get, insert, update, del]);
 
   function rowToApi(r) {
     if (!r) return null;
