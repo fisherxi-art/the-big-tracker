@@ -3,7 +3,7 @@
  * Expected files (default): data/research.xlsx, data/meetings.xlsx
  * Row 1 = headers; data from row 2 (same layout as the original Perplexity export).
  */
-import "dotenv/config";
+import dotenv from "dotenv";
 import { existsSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
@@ -12,6 +12,7 @@ import { openDb } from "../server/db.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
+dotenv.config({ path: join(root, ".env"), override: true });
 
 const DATA_DIR = process.env.DATA_DIR
   ? join(root, process.env.DATA_DIR.replace(/^\.\//, ""))

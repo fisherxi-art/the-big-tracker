@@ -905,17 +905,17 @@ function ResearchBoard({
                 selected?.id === r.id ? "border-primary ring-1 ring-primary/40 bg-muted/25" : "border-border hover:bg-muted/15"
               }`}
             >
-              <div className="flex items-start justify-between gap-1.5 sm:gap-2 mb-1 sm:mb-2">
-                <span className="font-semibold text-[13px] sm:text-sm leading-snug line-clamp-3">
+              <div className="flex items-start justify-between gap-1.5 sm:gap-2 mb-1.5 sm:mb-2">
+                <span className="font-semibold text-sm sm:text-base leading-snug line-clamp-3">
                   {researchDisplayTitle(r)}
                 </span>
                 {r.rating ? (
-                  <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded border ${ratingTone(r.rating)}`}>
+                  <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded border ${ratingTone(r.rating)}`}>
                     {r.rating}
                   </span>
                 ) : null}
               </div>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-sm text-muted-foreground">
                 {r.date}
                 {r.source ? ` · ${r.source}` : ""}
               </p>
@@ -953,36 +953,36 @@ function ResearchBoard({
 
 function ResearchDetail({ r }: { r: Research }) {
   return (
-    <div className="space-y-4 sm:space-y-5 text-sm">
+    <div className="space-y-5 sm:space-y-6 text-base leading-relaxed">
       <div>
-        <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Title</p>
-        <p className="font-medium text-base leading-snug">{researchDisplayTitle(r)}</p>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">Title</p>
+        <p className="font-semibold text-lg sm:text-xl leading-snug">{researchDisplayTitle(r)}</p>
         {(r.company || r.ticker || r.theme) && (
-          <p className="text-xs text-muted-foreground mt-1">
+          <p className="text-sm text-muted-foreground mt-2">
             {r.category === "company"
               ? [r.company, r.ticker].filter(Boolean).join(" · ") || "—"
               : r.theme || "—"}
           </p>
         )}
       </div>
-      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-2 sm:gap-y-3 text-xs">
+      <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 sm:gap-y-4 text-sm">
         <div>
-          <dt className="text-muted-foreground">Date</dt>
-          <dd className="mt-0.5">{r.date || "—"}</dd>
+          <dt className="text-muted-foreground text-xs font-medium">Date</dt>
+          <dd className="mt-1">{r.date || "—"}</dd>
         </div>
         <div>
-          <dt className="text-muted-foreground">Category</dt>
-          <dd className="mt-0.5 capitalize">{r.category}</dd>
+          <dt className="text-muted-foreground text-xs font-medium">Category</dt>
+          <dd className="mt-1 capitalize">{r.category}</dd>
         </div>
         <div className="col-span-full">
-          <dt className="text-muted-foreground">Source</dt>
-          <dd className="mt-0.5 break-words">{r.source || "—"}</dd>
+          <dt className="text-muted-foreground text-xs font-medium">Source</dt>
+          <dd className="mt-1 break-words">{r.source || "—"}</dd>
         </div>
         {r.rating ? (
           <div className="col-span-full">
-            <dt className="text-muted-foreground">Rating / view</dt>
-            <dd className="mt-0.5">
-              <span className={`inline-block text-xs px-2 py-0.5 rounded border ${ratingTone(r.rating)}`}>
+            <dt className="text-muted-foreground text-xs font-medium">Rating / view</dt>
+            <dd className="mt-1">
+              <span className={`inline-block text-sm px-2.5 py-0.5 rounded border ${ratingTone(r.rating)}`}>
                 {r.rating}
               </span>
             </dd>
@@ -991,8 +991,8 @@ function ResearchDetail({ r }: { r: Research }) {
       </dl>
       {r.keyPoints?.length ? (
         <div>
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">Key points</p>
-          <ul className="list-disc pl-4 space-y-1.5 text-xs leading-relaxed">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2.5">Key points</p>
+          <ul className="list-disc pl-5 space-y-2 text-base leading-relaxed">
             {r.keyPoints.map((k, i) => (
               <li key={i}>{k}</li>
             ))}
@@ -1001,10 +1001,10 @@ function ResearchDetail({ r }: { r: Research }) {
       ) : null}
       {r.tags?.length ? (
         <div>
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">Tags</p>
-          <div className="flex flex-wrap gap-1.5">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2.5">Tags</p>
+          <div className="flex flex-wrap gap-2">
             {r.tags.map((t) => (
-              <span key={t} className="text-[11px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground">
+              <span key={t} className="text-sm px-2.5 py-1 rounded-full bg-muted text-muted-foreground">
                 {t}
               </span>
             ))}
@@ -1013,8 +1013,8 @@ function ResearchDetail({ r }: { r: Research }) {
       ) : null}
       {r.rawText ? (
         <div>
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-2">Full text</p>
-          <pre className="text-xs whitespace-pre-wrap break-words font-sans leading-relaxed text-foreground/90 bg-muted/30 rounded-sm p-2 sm:p-3 max-h-[min(42vh,360px)] sm:max-h-[min(50vh,420px)] overflow-y-auto">
+          <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2.5">Full text</p>
+          <pre className="whitespace-pre-wrap break-words font-sans text-base leading-relaxed text-foreground bg-muted/30 rounded-sm p-3 sm:p-4">
             {r.rawText}
           </pre>
         </div>
@@ -1105,37 +1105,37 @@ function MeetingDetail({ m }: { m: Meeting }) {
     ["RSVP", m.rsvpStatus || "—"],
   ];
   return (
-    <div className="space-y-4 sm:space-y-5 text-sm">
+    <div className="space-y-5 sm:space-y-6 text-base leading-relaxed">
       <div>
-        <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Event</p>
-        <p className="font-medium text-base leading-snug break-words">{m.eventName || "—"}</p>
+        <p className="text-xs uppercase tracking-wide text-muted-foreground mb-1.5">Event</p>
+        <p className="font-semibold text-lg sm:text-xl leading-snug break-words">{m.eventName || "—"}</p>
       </div>
-      <dl className="space-y-2 sm:space-y-3 text-xs">
+      <dl className="space-y-3 sm:space-y-4 text-sm">
         {rows.map(([label, val]) => (
           <div key={label}>
-            <dt className="text-muted-foreground">{label}</dt>
-            <dd className="mt-0.5 text-foreground break-words">{val}</dd>
+            <dt className="text-muted-foreground text-xs font-medium">{label}</dt>
+            <dd className="mt-1 text-foreground break-words">{val}</dd>
           </div>
         ))}
       </dl>
       {m.keyTopics ? (
         <div>
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Key topics</p>
-          <p className="text-xs leading-relaxed whitespace-pre-wrap break-words">{m.keyTopics}</p>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Key topics</p>
+          <p className="text-base leading-relaxed whitespace-pre-wrap break-words">{m.keyTopics}</p>
         </div>
       ) : null}
       {m.notes ? (
         <div>
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Notes</p>
-          <p className="text-xs leading-relaxed whitespace-pre-wrap break-words">{m.notes}</p>
+          <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Notes</p>
+          <p className="text-base leading-relaxed whitespace-pre-wrap break-words">{m.notes}</p>
         </div>
       ) : null}
       {m.sourceType || m.sourceContent ? (
         <div>
-          <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Source</p>
-          {m.sourceType ? <p className="text-xs text-muted-foreground mb-2">{m.sourceType}</p> : null}
+          <p className="text-xs uppercase tracking-wide text-muted-foreground mb-2">Source</p>
+          {m.sourceType ? <p className="text-sm text-muted-foreground mb-2">{m.sourceType}</p> : null}
           {m.sourceContent ? (
-            <pre className="text-xs whitespace-pre-wrap break-words font-sans leading-relaxed bg-muted/30 rounded-sm p-2 sm:p-3 max-h-[min(38vh,320px)] sm:max-h-[min(45vh,380px)] overflow-y-auto">
+            <pre className="whitespace-pre-wrap break-words font-sans text-base leading-relaxed bg-muted/30 rounded-sm p-3 sm:p-4">
               {m.sourceContent}
             </pre>
           ) : null}
