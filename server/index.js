@@ -1,4 +1,4 @@
-import "dotenv/config";
+import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
 import { existsSync, mkdirSync } from "fs";
@@ -8,6 +8,8 @@ import { openDb, researchRepo, meetingsRepo } from "./db.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
+/** Local .env wins over User/System env (e.g. Windows OPENROUTER_MODEL) so edits to .env apply. */
+dotenv.config({ path: join(root, ".env"), override: true });
 const distIndex = join(root, "dist", "index.html");
 if (process.env.NODE_ENV === "production" && !existsSync(distIndex)) {
   console.error("Production mode requires a build. Run: npm run build");
