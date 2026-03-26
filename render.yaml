@@ -33,5 +33,7 @@ services:
       # Pin text model in production (dashboard value overrides if set). dotenv does not override OS env.
       - key: OPENROUTER_MODEL
         value: qwen/qwen3.5-flash-02-23
+      - key: OPENROUTER_VISION_MODEL
+        value: qwen/qwen3.5-9b
       - key: PUBLIC_URL
         sync: false

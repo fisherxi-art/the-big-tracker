@@ -32,10 +32,10 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || "qwen/qwen3.5-flash-02-23";
 /**
  * Vision / OCR only. Must accept image_url on OpenRouter (see openrouter.ai/models, filter: image).
- * Default: DeepSeek V3.2 — if OCR fails, try another vision id in OPENROUTER_VISION_MODEL.
+ * Default: Qwen 3.5 9B — if OCR fails, try another vision id in OPENROUTER_VISION_MODEL.
  */
 const DEFAULT_VISION_MODEL =
-  process.env.OPENROUTER_VISION_MODEL || "deepseek/deepseek-v3.2";
+  process.env.OPENROUTER_VISION_MODEL || "qwen/qwen3.5-9b";
 
 /** OpenRouter web search plugin (Exa). Off by default; set OPENROUTER_WEB_SEARCH=1 to enable. */
 function openRouterWebPlugins() {
