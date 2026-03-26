@@ -17,8 +17,9 @@ services:
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
+      # 22.13+ enables node:sqlite without --experimental-sqlite; scripts still pass the flag for 22.5–22.12.
       - key: NODE_VERSION
-        value: "22.12.0"
+        value: "22.13.1"
       - key: OPENROUTER_API_KEY
         sync: false
       - key: PUBLIC_URL
