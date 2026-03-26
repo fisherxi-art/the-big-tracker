@@ -1,0 +1,25 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+#
+# SQLite on the default (ephemeral) filesystem is reset when the service redeploys or moves.
+# To keep data across deploys: use a paid instance type, add a persistent disk mounted at
+# /var/data, then set DATABASE_PATH=/var/data/app.db and DATA_DIR=/var/data in the dashboard.
+#
+# After the first deploy, set PUBLIC_URL to your service URL (https://<name>.onrender.com)
+# so OpenRouter gets a correct HTTP-Referer.
+
+services:
+  - type: web
+    name: the-big-tracker
+    runtime: node
+    region: oregon
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22.12.0"
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
