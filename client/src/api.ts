@@ -124,6 +124,8 @@ export const api = {
       openRouterModel?: string;
       openRouterVisionModel?: string;
       openRouterWebSearch?: boolean;
+      /** Server fetches http(s) URLs in paste and extracts article text before AI (set URL_FETCH=0 to disable). */
+      urlFetch?: boolean;
     }>("/api/health"),
   research: {
     list: () => j<Research[]>("/api/research"),
@@ -150,11 +152,27 @@ export const api = {
       research: Omit<Research, "id">[];
       meeting: Omit<Meeting, "id"> | null;
       debug?: { parsePasteSystemPrompt?: string; userMessageChars?: number };
+      fetchSummary?: {
+        urlFetchEnabled: boolean;
+        urlsDetected: number;
+        articlesExtracted: number;
+        extractedTotalChars: number;
+        perUrl: { url?: string; ok?: boolean; chars?: number; error?: string; title?: string }[];
+        fallbackFromUrl?: boolean;
+      };
     }> => {
       const data = await j<{
         research?: unknown;
         researchItems?: unknown;
         meeting?: unknown;
+        fetchSummary?: {
+          urlFetchEnabled: boolean;
+          urlsDetected: number;
+          articlesExtracted: number;
+          extractedTotalChars: number;
+          perUrl: { url?: string; ok?: boolean; chars?: number; error?: string; title?: string }[];
+          fallbackFromUrl?: boolean;
+        };
         _debug?: { parsePasteSystemPrompt?: string; userMessageChars?: number };
       }>(`/api/ai/parse-paste`, {
         method: "POST",
@@ -169,7 +187,7 @@ export const api = {
         m && typeof m === "object" && !Array.isArray(m)
           ? (m as Omit<Meeting, "id">)
           : null;
-      return { research, meeting, debug: data._debug };
+      return { research, meeting, debug: data._debug, fetchSummary: data.fetchSummary };
     },
     parseResearch: (rawText: string) =>
       j<Omit<Research, "id">>(`/api/ai/parse-research`, {

@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type SyntheticEvent } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+  type SyntheticEvent,
+} from "react";
 import type { ClipboardEvent, DragEvent } from "react";
 import { api, type Meeting, type Research } from "./api";
 
@@ -319,6 +328,7 @@ function AiModelsBar({
     openRouterModel?: string;
     openRouterVisionModel?: string;
     openRouterWebSearch?: boolean;
+    urlFetch?: boolean;
   } | null;
 }) {
   if (!health) return null;
@@ -357,6 +367,12 @@ function AiModelsBar({
           <span className="text-foreground tabular-nums font-sans">
             {health.openRouterWebSearch ? "On" : "Off"}
           </span>
+          <span className="text-muted-foreground font-sans uppercase tracking-wide text-[10px] sm:pt-0.5">
+            Fetch URLs
+          </span>
+          <span className="text-foreground tabular-nums font-sans" title="Server reads article text from links in your paste before AI (OpenRouter).">
+            {health.urlFetch !== false ? "On" : "Off"}
+          </span>
         </div>
       </div>
     </div>
@@ -377,6 +393,17 @@ export default function App() {
   const [pasteText, setPasteText] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [showAiDebug, setShowAiDebug] = useState(false);
+  const [showFetchDebug, setShowFetchDebug] = useState(false);
+  const [fetchDebugData, setFetchDebugData] = useState<{
+    ok?: boolean;
+    empty?: boolean;
+    message?: string;
+    at?: string;
+    note?: string;
+    rawPastePreview?: string;
+    fetchResults?: { url?: string; ok?: boolean; error?: string; title?: string; chars?: number }[];
+    articles?: { url: string; title: string; chars: number; text: string; textTruncated?: boolean }[];
+  } | null>(null);
   const [parsePasteDebug, setParsePasteDebug] = useState<{
     parsePasteSystemPrompt?: string;
     parseResearchSystemPrompt?: string;
@@ -452,6 +479,24 @@ export default function App() {
     };
   }, [showAiDebug]);
 
+  const loadFetchDebug = useCallback(async () => {
+    try {
+      const r = await fetch("/api/ai/debug-last-fetch");
+      const d = (await r.json()) as typeof fetchDebugData;
+      setFetchDebugData(d);
+    } catch {
+      setFetchDebugData({ ok: false, message: "Could not load fetch debug" });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showFetchDebug) {
+      setFetchDebugData(null);
+      return;
+    }
+    void loadFetchDebug();
+  }, [showFetchDebug, loadFetchDebug]);
+
   useEffect(() => {
     if (!success) return;
     const t = setTimeout(() => setSuccess(null), 5000);
@@ -491,7 +536,7 @@ export default function App() {
     const sourceImagePayload =
       imgs.length === 1 ? imgs[0] : imgs.length > 1 ? JSON.stringify(imgs) : undefined;
     try {
-      const { research: rList, meeting: mData, debug } = await api.ai.parsePaste(text, {
+      const { research: rList, meeting: mData, debug, fetchSummary } = await api.ai.parsePaste(text, {
         debugPrompts: showAiDebug,
       });
       if (showAiDebug && debug?.userMessageChars != null) {
@@ -528,10 +573,23 @@ export default function App() {
       if (createdR.length && mData) setTab("research");
       else if (mData && !createdR.length) setTab("meetings");
       else if (createdR.length) setTab("research");
-      setSuccess(`Saved ${parts.join(" & ")}.`);
+      {
+        let msg = `Saved ${parts.join(" & ")}.`;
+        if (fetchSummary && fetchSummary.urlsDetected > 0) {
+          if (!fetchSummary.urlFetchEnabled) {
+            msg += ` ${fetchSummary.urlsDetected} link(s) in paste — server URL fetch is off (Mozilla Readability not used).`;
+          } else {
+            msg += ` URL fetch: ${fetchSummary.articlesExtracted} article(s) extracted (${fetchSummary.extractedTotalChars} chars) → sent to AI with Readability.`;
+            if (fetchSummary.fallbackFromUrl) msg += " (Fallback note from fetch.)";
+          }
+        }
+        setSuccess(msg);
+      }
       if (parts.length) pendingSourceImagesRef.current = null;
     } catch (e) {
       setErr(e instanceof Error ? e.message : "AI parse failed");
+    } finally {
+      if (showFetchDebug) void loadFetchDebug();
     }
   }
 
@@ -724,6 +782,9 @@ export default function App() {
               autoCorrect="off"
             />
           </div>
+          <p className="mt-1.5 text-[10px] sm:text-[11px] text-muted-foreground leading-snug">
+            HTTP(S) links in the paste are fetched on the server; article text is appended for the AI. Your original paste is stored unchanged on saved notes.
+          </p>
           <div className="mt-1.5 sm:mt-2 flex flex-row flex-wrap gap-2 items-stretch">
             <button
               type="button"
@@ -755,6 +816,17 @@ export default function App() {
               />
               Show AI prompt (debug)
             </label>
+            <label className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground cursor-pointer touch-manipulation">
+              <input
+                type="checkbox"
+                className="rounded border-border"
+                checked={showFetchDebug}
+                onChange={(e) => {
+                  setShowFetchDebug(e.target.checked);
+                }}
+              />
+              Show last URL fetch (debug)
+            </label>
           </div>
           {showAiDebug && parsePasteDebug?.parsePasteSystemPrompt ? (
             <details className="mt-1.5 sm:mt-2 rounded-sm border border-border bg-card/80 p-2 text-[11px]" open>
@@ -778,6 +850,80 @@ export default function App() {
                 {parsePasteDebug.parseResearchSystemPrompt}
               </pre>
             </details>
+          ) : null}
+          {showFetchDebug && fetchDebugData ? (
+            <div className="mt-1.5 sm:mt-2 rounded-sm border border-border bg-card/80 p-2 text-[11px]">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <span className="font-medium text-muted-foreground">Last URL fetch (server)</span>
+                <button
+                  type="button"
+                  className={`${btnGhost()} !py-1 !px-2 !min-h-0 text-[10px]`}
+                  onClick={() => void loadFetchDebug()}
+                >
+                  Refresh
+                </button>
+              </div>
+              {fetchDebugData.empty ? (
+                <p className="text-muted-foreground text-[10px] sm:text-[11px]">{fetchDebugData.message}</p>
+              ) : (
+                <div className="space-y-2 text-[10px] sm:text-[11px]">
+                  {fetchDebugData.at ? (
+                    <p className="text-muted-foreground tabular-nums">at {fetchDebugData.at}</p>
+                  ) : null}
+                  {fetchDebugData.note ? (
+                    <p className="text-amber-700 dark:text-amber-300">{fetchDebugData.note}</p>
+                  ) : null}
+                  {fetchDebugData.rawPastePreview ? (
+                    <details>
+                      <summary className="cursor-pointer text-muted-foreground">Paste preview (start)</summary>
+                      <pre className="mt-1 max-h-[24vh] overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-snug bg-muted/30 rounded p-2">
+                        {fetchDebugData.rawPastePreview}
+                      </pre>
+                    </details>
+                  ) : null}
+                  {fetchDebugData.fetchResults?.length ? (
+                    <div>
+                      <p className="text-muted-foreground mb-1">Per-URL results</p>
+                      <ul className="list-disc pl-4 space-y-1">
+                        {fetchDebugData.fetchResults.map((fr, i) => (
+                          <li key={i} className="break-all">
+                            {fr.ok ? (
+                              <span className="text-emerald-700 dark:text-emerald-400">
+                                OK · {fr.url}{" "}
+                                {fr.chars != null ? `· ${fr.chars} chars` : ""}
+                                {fr.title
+                                  ? ` · ${fr.title.length > 100 ? `${fr.title.slice(0, 100)}…` : fr.title}`
+                                  : ""}
+                              </span>
+                            ) : (
+                              <span className="text-red-700 dark:text-red-400">
+                                Fail · {fr.error ?? "?"} — {fr.url}
+                              </span>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {fetchDebugData.articles?.map((a, i) => (
+                    <details key={i} open={i === 0}>
+                      <summary className="cursor-pointer font-medium text-foreground break-all">
+                        Article {i + 1}: {a.title || a.url}{" "}
+                        <span className="text-muted-foreground font-normal">({a.chars} chars)</span>
+                      </summary>
+                      {a.textTruncated ? (
+                        <p className="text-amber-700 dark:text-amber-300 text-[10px] mt-1">
+                          Response truncated in JSON; full text is in server memory up to extract limit.
+                        </p>
+                      ) : null}
+                      <pre className="mt-1 max-h-[min(50vh,520px)] overflow-auto whitespace-pre-wrap font-mono text-[10px] leading-relaxed text-foreground/90 bg-muted/30 rounded p-2">
+                        {a.text}
+                      </pre>
+                    </details>
+                  ))}
+                </div>
+              )}
+            </div>
           ) : null}
           <div className="mt-2 sm:mt-3 pt-2 sm:pt-3 border-t border-border/60 flex flex-col gap-2">
             <div className="grid grid-cols-2 gap-1.5 sm:flex sm:flex-wrap sm:items-stretch sm:gap-2">
@@ -872,6 +1018,79 @@ export default function App() {
   );
 }
 
+function ResearchNoteCard({
+  r,
+  selected,
+  onSelect,
+}: {
+  r: Research;
+  selected: Research | null;
+  onSelect: (r: Research | null) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(r)}
+      className={`text-left rounded-sm border p-3 sm:p-4 min-h-[64px] sm:min-h-[72px] touch-manipulation active:opacity-90 transition-opacity ${
+        selected?.id === r.id ? "border-primary ring-1 ring-primary/40 bg-muted/25" : "border-border hover:bg-muted/15"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-1.5 sm:gap-2 mb-1.5 sm:mb-2">
+        <span className="font-semibold text-sm sm:text-base leading-snug line-clamp-3">
+          {researchDisplayTitle(r)}
+        </span>
+        {r.rating ? (
+          <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded border ${ratingTone(r.rating)}`}>
+            {r.rating}
+          </span>
+        ) : null}
+      </div>
+      <p className="text-sm text-muted-foreground">
+        {r.date}
+        {r.source ? ` · ${r.source}` : ""}
+      </p>
+    </button>
+  );
+}
+
+function ResearchDetailPanel({
+  r,
+  onDelete,
+  variant,
+  scrollRef,
+}: {
+  r: Research;
+  onDelete: (id: number) => void;
+  variant: "mobile" | "desktop";
+  scrollRef?: RefObject<HTMLDivElement | null>;
+}) {
+  const isDesktop = variant === "desktop";
+  return (
+    <div
+      ref={isDesktop ? undefined : scrollRef}
+      className={
+        isDesktop
+          ? "hidden lg:flex lg:col-span-5 flex-col min-h-0 border border-border rounded-sm bg-card/50 overflow-hidden lg:sticky lg:top-4 lg:self-start max-h-[min(58vh,520px)] sm:max-h-[65vh] lg:max-h-[min(75vh,900px)]"
+          : "flex flex-col border border-border rounded-sm bg-card/50 overflow-hidden"
+      }
+    >
+      <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-border shrink-0 flex items-center justify-between gap-2 bg-muted/20">
+        <h3 className="text-xs sm:text-sm font-semibold uppercase tracking-wide text-muted-foreground">Detail</h3>
+        <button
+          type="button"
+          className="text-[11px] sm:text-xs font-medium text-red-700 border border-red-300 rounded-sm px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[36px] sm:min-h-[40px] touch-manipulation active:opacity-80 dark:text-red-400 dark:border-red-800/80"
+          onClick={() => onDelete(r.id)}
+        >
+          Delete
+        </button>
+      </div>
+      <div className={isDesktop ? "overflow-y-auto p-3 sm:p-4 flex-1 min-h-0" : "p-3 sm:p-4"}>
+        <ResearchDetail r={r} />
+      </div>
+    </div>
+  );
+}
+
 function ResearchBoard({
   items,
   totalCount,
@@ -885,67 +1104,74 @@ function ResearchBoard({
   onSelect: (r: Research | null) => void;
   onDelete: (id: number) => void;
 }) {
+  const mobileDetailRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!selected) return;
+    const mq = window.matchMedia("(max-width: 1023px)");
+    if (!mq.matches) return;
+    requestAnimationFrame(() => {
+      mobileDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, [selected?.id]);
+
+  const emptyMsg =
+    totalCount > 0
+      ? "No notes match your search."
+      : "No research notes yet. Paste text above and tap Identify & save.";
+
   return (
     <div
       className={`flex flex-col gap-3 sm:gap-4 lg:gap-6 lg:min-h-[min(70vh,800px)] ${
         selected ? "lg:grid lg:grid-cols-12" : ""
       }`}
     >
-      <div className={`flex flex-col min-h-0 gap-2 sm:gap-3 ${selected ? "lg:col-span-7" : ""}`}>
+      {/* Mobile / tablet: detail opens directly under the tapped card */}
+      <div className="lg:hidden flex flex-col gap-2 sm:gap-3">
+        <h2 className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest text-muted-foreground shrink-0">
+          Notes
+        </h2>
+        {items.length === 0 ? (
+          <p className="text-xs sm:text-sm text-muted-foreground py-6 sm:py-10 text-center border border-dashed border-border rounded-sm px-3 sm:px-4">
+            {emptyMsg}
+          </p>
+        ) : (
+          items.map((r) => (
+            <Fragment key={r.id}>
+              <ResearchNoteCard r={r} selected={selected} onSelect={onSelect} />
+              {selected?.id === r.id ? (
+                <ResearchDetailPanel
+                  r={selected}
+                  onDelete={onDelete}
+                  variant="mobile"
+                  scrollRef={mobileDetailRef}
+                />
+              ) : null}
+            </Fragment>
+          ))
+        )}
+      </div>
+
+      {/* Desktop: list + sticky side panel */}
+      <div
+        className={`hidden lg:flex flex-col min-h-0 gap-2 sm:gap-3 ${selected ? "lg:col-span-7" : "lg:col-span-12"}`}
+      >
         <h2 className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest text-muted-foreground shrink-0">
           Notes
         </h2>
         <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2 content-start">
           {items.map((r) => (
-            <button
-              key={r.id}
-              type="button"
-              onClick={() => onSelect(r)}
-              className={`text-left rounded-sm border p-3 sm:p-4 min-h-[64px] sm:min-h-[72px] touch-manipulation active:opacity-90 transition-opacity ${
-                selected?.id === r.id ? "border-primary ring-1 ring-primary/40 bg-muted/25" : "border-border hover:bg-muted/15"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-1.5 sm:gap-2 mb-1.5 sm:mb-2">
-                <span className="font-semibold text-sm sm:text-base leading-snug line-clamp-3">
-                  {researchDisplayTitle(r)}
-                </span>
-                {r.rating ? (
-                  <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded border ${ratingTone(r.rating)}`}>
-                    {r.rating}
-                  </span>
-                ) : null}
-              </div>
-              <p className="text-sm text-muted-foreground">
-                {r.date}
-                {r.source ? ` · ${r.source}` : ""}
-              </p>
-            </button>
+            <ResearchNoteCard key={r.id} r={r} selected={selected} onSelect={onSelect} />
           ))}
           {items.length === 0 && (
             <p className="text-xs sm:text-sm text-muted-foreground col-span-full py-6 sm:py-10 text-center border border-dashed border-border rounded-sm px-3 sm:px-4">
-              {totalCount > 0
-                ? "No notes match your search."
-                : "No research notes yet. Paste text above and tap Identify & save."}
+              {emptyMsg}
             </p>
           )}
         </div>
       </div>
       {selected ? (
-        <div className="lg:col-span-5 flex flex-col min-h-0 border border-border rounded-sm bg-card/50 overflow-hidden lg:sticky lg:top-4 lg:self-start max-h-[min(58vh,520px)] sm:max-h-[65vh] lg:max-h-[min(75vh,900px)]">
-          <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-border shrink-0 flex items-center justify-between gap-2 bg-muted/20">
-            <h3 className="text-xs sm:text-sm font-semibold uppercase tracking-wide text-muted-foreground">Detail</h3>
-            <button
-              type="button"
-              className="text-[11px] sm:text-xs font-medium text-red-700 border border-red-300 rounded-sm px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[36px] sm:min-h-[40px] touch-manipulation active:opacity-80 dark:text-red-400 dark:border-red-800/80"
-              onClick={() => onDelete(selected.id)}
-            >
-              Delete
-            </button>
-          </div>
-          <div className="overflow-y-auto p-3 sm:p-4 flex-1">
-            <ResearchDetail r={selected} />
-          </div>
-        </div>
+        <ResearchDetailPanel r={selected} onDelete={onDelete} variant="desktop" />
       ) : null}
     </div>
   );
@@ -1024,6 +1250,71 @@ function ResearchDetail({ r }: { r: Research }) {
   );
 }
 
+function MeetingCard({
+  m,
+  selected,
+  onSelect,
+}: {
+  m: Meeting;
+  selected: Meeting | null;
+  onSelect: (m: Meeting | null) => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(m)}
+      className={`text-left rounded-sm border p-3 sm:p-4 min-h-[72px] sm:min-h-[80px] touch-manipulation active:opacity-90 transition-opacity ${
+        selected?.id === m.id ? "border-primary ring-1 ring-primary/40 bg-muted/25" : "border-border hover:bg-muted/15"
+      }`}
+    >
+      <p className="font-semibold text-[13px] sm:text-sm leading-snug line-clamp-3 mb-1 sm:mb-2">{m.eventName || "—"}</p>
+      <p className="text-xs text-muted-foreground">
+        {m.date}
+        {m.time ? ` · ${m.time}` : ""}
+      </p>
+      <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{m.invitingParty || "—"}</p>
+    </button>
+  );
+}
+
+function MeetingDetailPanel({
+  m,
+  onDelete,
+  variant,
+  scrollRef,
+}: {
+  m: Meeting;
+  onDelete: (id: number) => void;
+  variant: "mobile" | "desktop";
+  scrollRef?: RefObject<HTMLDivElement | null>;
+}) {
+  const isDesktop = variant === "desktop";
+  return (
+    <div
+      ref={isDesktop ? undefined : scrollRef}
+      className={
+        isDesktop
+          ? "hidden lg:flex lg:col-span-5 flex-col min-h-0 border border-border rounded-sm bg-card/50 overflow-hidden lg:sticky lg:top-4 lg:self-start max-h-[min(58vh,520px)] sm:max-h-[65vh] lg:max-h-[min(75vh,900px)]"
+          : "flex flex-col border border-border rounded-sm bg-card/50 overflow-hidden"
+      }
+    >
+      <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-border shrink-0 flex items-center justify-between gap-2 bg-muted/20">
+        <h3 className="text-xs sm:text-sm font-semibold uppercase tracking-wide text-muted-foreground">Detail</h3>
+        <button
+          type="button"
+          className="text-[11px] sm:text-xs font-medium text-red-700 border border-red-300 rounded-sm px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[36px] sm:min-h-[40px] touch-manipulation active:opacity-80 dark:text-red-400 dark:border-red-800/80"
+          onClick={() => onDelete(m.id)}
+        >
+          Delete
+        </button>
+      </div>
+      <div className={isDesktop ? "overflow-y-auto p-3 sm:p-4 flex-1 min-h-0" : "p-3 sm:p-4"}>
+        <MeetingDetail m={m} />
+      </div>
+    </div>
+  );
+}
+
 function MeetingsBoard({
   items,
   totalCount,
@@ -1037,59 +1328,72 @@ function MeetingsBoard({
   onSelect: (m: Meeting | null) => void;
   onDelete: (id: number) => void;
 }) {
+  const mobileDetailRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!selected) return;
+    const mq = window.matchMedia("(max-width: 1023px)");
+    if (!mq.matches) return;
+    requestAnimationFrame(() => {
+      mobileDetailRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+  }, [selected?.id]);
+
+  const emptyMsg =
+    totalCount > 0
+      ? "No meetings match your search."
+      : "No meetings yet. Paste an invite above and tap Identify & save.";
+
   return (
     <div
       className={`flex flex-col gap-3 sm:gap-4 lg:gap-6 lg:min-h-[min(70vh,800px)] ${
         selected ? "lg:grid lg:grid-cols-12" : ""
       }`}
     >
-      <div className={`flex flex-col min-h-0 gap-2 sm:gap-3 ${selected ? "lg:col-span-7" : ""}`}>
+      <div className="lg:hidden flex flex-col gap-2 sm:gap-3">
+        <h2 className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest text-muted-foreground shrink-0">
+          Meetings
+        </h2>
+        {items.length === 0 ? (
+          <p className="text-xs sm:text-sm text-muted-foreground py-6 sm:py-10 text-center border border-dashed border-border rounded-sm px-3 sm:px-4">
+            {emptyMsg}
+          </p>
+        ) : (
+          items.map((m) => (
+            <Fragment key={m.id}>
+              <MeetingCard m={m} selected={selected} onSelect={onSelect} />
+              {selected?.id === m.id ? (
+                <MeetingDetailPanel
+                  m={selected}
+                  onDelete={onDelete}
+                  variant="mobile"
+                  scrollRef={mobileDetailRef}
+                />
+              ) : null}
+            </Fragment>
+          ))
+        )}
+      </div>
+
+      <div
+        className={`hidden lg:flex flex-col min-h-0 gap-2 sm:gap-3 ${selected ? "lg:col-span-7" : "lg:col-span-12"}`}
+      >
         <h2 className="text-[10px] sm:text-xs font-semibold uppercase tracking-widest text-muted-foreground shrink-0">
           Meetings
         </h2>
         <div className="grid gap-2 sm:gap-3 grid-cols-1 sm:grid-cols-2 content-start">
           {items.map((m) => (
-            <button
-              key={m.id}
-              type="button"
-              onClick={() => onSelect(m)}
-              className={`text-left rounded-sm border p-3 sm:p-4 min-h-[72px] sm:min-h-[80px] touch-manipulation active:opacity-90 transition-opacity ${
-                selected?.id === m.id ? "border-primary ring-1 ring-primary/40 bg-muted/25" : "border-border hover:bg-muted/15"
-              }`}
-            >
-              <p className="font-semibold text-[13px] sm:text-sm leading-snug line-clamp-3 mb-1 sm:mb-2">{m.eventName || "—"}</p>
-              <p className="text-xs text-muted-foreground">
-                {m.date}
-                {m.time ? ` · ${m.time}` : ""}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{m.invitingParty || "—"}</p>
-            </button>
+            <MeetingCard key={m.id} m={m} selected={selected} onSelect={onSelect} />
           ))}
           {items.length === 0 && (
             <p className="text-xs sm:text-sm text-muted-foreground col-span-full py-6 sm:py-10 text-center border border-dashed border-border rounded-sm px-3 sm:px-4">
-              {totalCount > 0
-                ? "No meetings match your search."
-                : "No meetings yet. Paste an invite above and tap Identify & save."}
+              {emptyMsg}
             </p>
           )}
         </div>
       </div>
       {selected ? (
-        <div className="lg:col-span-5 flex flex-col min-h-0 border border-border rounded-sm bg-card/50 overflow-hidden lg:sticky lg:top-4 lg:self-start max-h-[min(58vh,520px)] sm:max-h-[65vh] lg:max-h-[min(75vh,900px)]">
-          <div className="px-3 sm:px-4 py-2 sm:py-3 border-b border-border shrink-0 flex items-center justify-between gap-2 bg-muted/20">
-            <h3 className="text-xs sm:text-sm font-semibold uppercase tracking-wide text-muted-foreground">Detail</h3>
-            <button
-              type="button"
-              className="text-[11px] sm:text-xs font-medium text-red-700 border border-red-300 rounded-sm px-2.5 sm:px-3 py-1.5 sm:py-2 min-h-[36px] sm:min-h-[40px] touch-manipulation active:opacity-80 dark:text-red-400 dark:border-red-800/80"
-              onClick={() => onDelete(selected.id)}
-            >
-              Delete
-            </button>
-          </div>
-          <div className="overflow-y-auto p-3 sm:p-4 flex-1">
-            <MeetingDetail m={selected} />
-          </div>
-        </div>
+        <MeetingDetailPanel m={selected} onDelete={onDelete} variant="desktop" />
       ) : null}
     </div>
   );

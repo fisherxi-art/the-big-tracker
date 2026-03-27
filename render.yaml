@@ -35,5 +35,11 @@ services:
         value: qwen/qwen3.5-flash-02-23
       - key: OPENROUTER_VISION_MODEL
         value: qwen/qwen3.5-9b
+      # Optional: set to 0 to disable HTTP fetch + article extraction from URLs in paste.
+      # - key: URL_FETCH
+      #   value: "0"
+      # Optional: fetch timeout ms (default 28000). Some international pages are slow.
+      # - key: URL_FETCH_TIMEOUT_MS
+      #   value: "35000"
       - key: PUBLIC_URL
         sync: false

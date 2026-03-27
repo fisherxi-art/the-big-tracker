@@ -5,6 +5,7 @@ import { existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 import { openDb, researchRepo, meetingsRepo } from "./db.js";
+import { augmentPasteForModel, extractHttpUrls, getLastFetchDebug } from "./urlExtract.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
@@ -163,6 +164,64 @@ function attachOriginalPasteToResearchNotes(notes, originalPaste) {
   return notes.map((n) => ({ ...n, rawText: t }));
 }
 
+/** Keep model excerpt in sourceContent; append full original paste for audit. */
+function attachOriginalPasteToMeeting(meeting, originalPaste) {
+  if (!meeting || typeof meeting !== "object") return meeting;
+  const t = String(originalPaste ?? "").trim();
+  if (!t) return meeting;
+  const prev = String(meeting.sourceContent ?? "").trim();
+  const merged = prev
+    ? `${prev}\n\n---\nOriginal paste\n---\n${t}`
+    : `---\nOriginal paste\n---\n${t}`;
+  return { ...meeting, sourceContent: merged };
+}
+
+function urlFetchEnabled() {
+  return !/^(0|false|off|no)$/i.test(String(process.env.URL_FETCH ?? "1"));
+}
+
+/** When the model returns no rows but we extracted article text from a URL, create one industry note. */
+function buildFallbackResearchFromArticle(article) {
+  const url = String(article?.url ?? "");
+  const title = String(article?.title ?? "").trim();
+  const text = String(article?.text ?? "").trim();
+  const hostname = (() => {
+    try {
+      return new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+      return "";
+    }
+  })();
+  const paras = text
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 15);
+  let keyPoints = paras.slice(0, 8);
+  if (keyPoints.length < 2) {
+    const sentences = text
+      .split(/(?<=[.!?。！？])\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 15);
+    keyPoints = sentences.slice(0, 8);
+  }
+  if (keyPoints.length === 0) {
+    keyPoints = [text.slice(0, 500) + (text.length > 500 ? "…" : "")];
+  }
+  const displayTitle = title || (hostname ? `${hostname} — article` : "Web article");
+  return normalizeResearchNoteShape({
+    date: new Date().toISOString().slice(0, 10),
+    category: "industry",
+    company: "",
+    ticker: "",
+    theme: "",
+    source: hostname || url.slice(0, 120),
+    rating: "",
+    title: displayTitle.slice(0, 220),
+    keyPoints: keyPoints.map((x) => x.slice(0, 900)),
+    tags: hostname ? [hostname] : ["web"],
+  });
+}
+
 /** System prompt for POST /api/ai/parse-paste (echoed in API when debugPrompts is true). */
 const PARSE_PASTE_SYSTEM_PROMPT = `You classify pasted text for an equity research tracker. The same paste may contain MULTIPLE distinct company/industry research notes (e.g. a digest, several broker blurbs), AND/OR a meeting/calendar invite — extract each piece separately.
 
@@ -207,7 +266,8 @@ Rules:
 - If the paste is clearly equity research only: set "research" to a non-empty array and "meeting" to null.
 - If it is clearly a meeting invite / corporate access only: set "meeting" to an object and "research" to [].
 - If BOTH appear, fill "research" (one or more) AND "meeting".
-- If the content fits neither, set "research" to [] and "meeting" to null.
+- WEB / NEWS / ANALYSIS ARTICLES: If the user message includes fetched web page text (sections like "Web page fetched for AI" or "Fetched from URL") or is clearly a news article, blog, 公众号 piece, or general market commentary, you MUST return at least ONE research object. Use category "industry" when no single listed company dominates; set "title" to the headline or a one-line topic; "source" to the publication/site or domain; "keyPoints" to 3–8 bullets summarizing substance (figures, views, events). Do NOT return empty research for successful article content.
+- ONLY if the text is truly empty, garbled, or neither finance-related nor a readable article, set "research" to [] and "meeting" to null.
 - Never invent tickers; use empty string if unknown.
 - Language: Write every extracted string (titles, keyPoints, tags, company/theme/source where applicable, and all meeting fields) in the SAME language as the source paste. If the paste mixes languages, use the dominant one. Do not translate into English unless the source is already English.`;
 
@@ -241,6 +301,7 @@ app.get("/api/health", (_, res) => {
     openRouterModel: DEFAULT_MODEL,
     openRouterVisionModel: DEFAULT_VISION_MODEL,
     openRouterWebSearch: Boolean(openRouterWebPlugins()),
+    urlFetch: urlFetchEnabled(),
   });
 });
 
@@ -249,6 +310,42 @@ app.get("/api/ai/debug-prompts", (_, res) => {
   res.json({
     parsePasteSystemPrompt: PARSE_PASTE_SYSTEM_PROMPT,
     parseResearchSystemPrompt: PARSE_RESEARCH_SYSTEM_PROMPT,
+  });
+});
+
+/** Last URL fetch + extracted text from the most recent parse-paste (in-memory; server restart clears). */
+app.get("/api/ai/debug-last-fetch", (_, res) => {
+  const d = getLastFetchDebug();
+  if (!d) {
+    return res.json({
+      ok: true,
+      empty: true,
+      message:
+        "No URL fetch has run yet this session. Paste a link and tap Identify & save, or refresh after a run.",
+    });
+  }
+  const MAX_TEXT = 150_000;
+  const articles = (d.extractedArticles || []).map((a) => {
+    const full = String(a.text ?? "");
+    const truncated = full.length > MAX_TEXT;
+    return {
+      url: a.url,
+      title: a.title || "",
+      chars: full.length,
+      text: truncated
+        ? `${full.slice(0, MAX_TEXT)}\n\n[… truncated in this JSON response only …]`
+        : full,
+      textTruncated: truncated,
+    };
+  });
+  res.json({
+    ok: true,
+    empty: false,
+    at: d.at,
+    note: d.note,
+    rawPastePreview: d.rawPastePreview,
+    fetchResults: d.fetchResults,
+    articles,
   });
 });
 
@@ -459,10 +556,29 @@ app.post("/api/ai/parse-paste", async (req, res) => {
     const raw = (req.body && req.body.rawText) || "";
     if (!raw.trim()) return res.status(400).json({ error: "rawText required" });
     const debugPrompts = Boolean(req.body?.debugPrompts);
+    const { textForModel, fetchResults, extractedArticles } = urlFetchEnabled()
+      ? await augmentPasteForModel(raw)
+      : { textForModel: raw, fetchResults: [], extractedArticles: [] };
+
+    const urlsDetected = extractHttpUrls(raw).length;
+    const fetchSummary = {
+      urlFetchEnabled: urlFetchEnabled(),
+      urlsDetected,
+      articlesExtracted: extractedArticles.length,
+      extractedTotalChars: extractedArticles.reduce((s, a) => s + (a.text?.length || 0), 0),
+      perUrl: fetchResults.map((r) => ({
+        url: r.url,
+        ok: r.ok,
+        chars: r.chars,
+        error: r.error,
+        title: r.title,
+      })),
+    };
+
     const text = await callOpenRouter(
       [
         { role: "system", content: PARSE_PASTE_SYSTEM_PROMPT },
-        { role: "user", content: raw.slice(0, 120000) },
+        { role: "user", content: textForModel.slice(0, 120000) },
       ],
       true
     );
@@ -478,19 +594,41 @@ app.post("/api/ai/parse-paste", async (req, res) => {
     const shaped = rawList
       .map((item) => normalizeResearchNoteShape(item))
       .filter(Boolean);
-    const research = attachOriginalPasteToResearchNotes(shaped, raw);
-    const meeting = parsed?.meeting ?? null;
+    let research = attachOriginalPasteToResearchNotes(shaped, raw);
+    let meeting = parsed?.meeting ?? null;
+    if (meeting && typeof meeting === "object") {
+      meeting = attachOriginalPasteToMeeting(meeting, raw);
+    }
+    let fallbackFromUrl = false;
+    if (research.length === 0 && meeting === null && extractedArticles.length > 0) {
+      const fb = buildFallbackResearchFromArticle(extractedArticles[0]);
+      research = attachOriginalPasteToResearchNotes([fb], raw);
+      fallbackFromUrl = true;
+    }
     if (research.length === 0 && meeting === null) {
+      let errMsg =
+        "Could not identify research or meeting content in this paste. Try a clearer broker note or invite.";
+      if (urlsDetected > 0) {
+        if (!fetchSummary.urlFetchEnabled) {
+          errMsg +=
+            " Links were found but URL fetch is off on the server (set URL_FETCH=1 or remove URL_FETCH=0).";
+        } else if (fetchSummary.articlesExtracted === 0) {
+          errMsg += ` ${urlsDetected} link(s) found but no article text was extracted (blocked site, login wall, or encoding). Use “Show last URL fetch (debug)”.`;
+        }
+      }
       return res.status(422).json({
-        error:
-          "Could not identify research or meeting content in this paste. Try a clearer broker note or invite.",
+        error: errMsg,
+        fetchSummary: { ...fetchSummary, fallbackFromUrl },
       });
     }
-    const out = { research, meeting };
+    const out = { research, meeting, fetchSummary: { ...fetchSummary, fallbackFromUrl } };
     if (debugPrompts) {
       out._debug = {
         parsePasteSystemPrompt: PARSE_PASTE_SYSTEM_PROMPT,
         userMessageChars: raw.length,
+        modelInputChars: textForModel.length,
+        urlFetch: fetchResults,
+        fallbackFromUrl,
       };
     }
     res.json(out);
