@@ -731,6 +731,12 @@ export default function App() {
                 {health.openrouter ? "API OK" : "No API key"}
               </span>
             )}
+            <a
+              href="/household/"
+              className={`${btnGhost()} !min-h-[40px] sm:!min-h-[44px] !py-1.5 sm:!py-2 !px-2 sm:!px-3 no-underline text-foreground`}
+            >
+              Household
+            </a>
             <button
               type="button"
               className={`${btnGhost()} !min-h-[40px] sm:!min-h-[44px] !min-w-[40px] sm:!min-w-[44px] !p-1.5 sm:!p-2 !justify-center`}

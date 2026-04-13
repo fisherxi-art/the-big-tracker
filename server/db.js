@@ -60,6 +60,20 @@ function migrate(db) {
       source_content TEXT NOT NULL DEFAULT ''
     );
     CREATE INDEX IF NOT EXISTS idx_meetings_date ON meetings(date);
+
+    CREATE TABLE IF NOT EXISTS expenses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      expense_date TEXT,
+      amount REAL,
+      currency TEXT,
+      merchant TEXT,
+      description TEXT,
+      category TEXT,
+      note TEXT,
+      image_path TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
   `);
   try {
     const cols = db.prepare("PRAGMA table_info(research)").all();
@@ -369,6 +383,72 @@ export function meetingsRepo(db) {
     delete(id) {
       const r = del.run(id);
       return r.changes > 0;
+    },
+  };
+}
+
+/** @param {DatabaseSync} db */
+export function expensesRepo(db) {
+  const insertStmt = db.prepare(`
+    INSERT INTO expenses (expense_date, amount, currency, merchant, description, category, note, image_path)
+    VALUES (@expense_date, @amount, @currency, @merchant, @description, @category, @note, @image_path)
+  `);
+
+  const listRecent = db.prepare(`
+    SELECT id, expense_date, amount, currency, merchant, description, category, note, image_path, created_at
+    FROM expenses
+    ORDER BY expense_date DESC, id DESC
+    LIMIT 10
+  `);
+
+  const monthlyStatsStmt = db.prepare(`
+    SELECT category, SUM(amount) AS total, currency
+    FROM expenses
+    WHERE strftime('%Y-%m', expense_date) = strftime('%Y-%m', 'now')
+    GROUP BY category, currency
+  `);
+
+  retainStatements(db, [insertStmt, listRecent, monthlyStatsStmt]);
+
+  return {
+    /**
+     * @param {object} payload
+     * @returns {{ success: true, id: number }}
+     */
+    insert(payload) {
+      const amount = Number(payload.amount);
+      const result = insertStmt.run({
+        expense_date: String(payload.expense_date ?? payload.date ?? "").trim(),
+        amount: Number.isFinite(amount) ? amount : 0,
+        currency: String(payload.currency ?? "").trim(),
+        merchant: String(payload.merchant ?? "").trim(),
+        description: String(payload.description ?? "").trim(),
+        category: String(payload.category ?? "").trim(),
+        note: String(payload.note ?? "").trim(),
+        image_path: String(payload.image_path ?? "").trim(),
+      });
+      return { success: true, id: Number(result.lastInsertRowid) };
+    },
+
+    stats() {
+      const recent = listRecent.all().map((r) => ({
+        id: r.id,
+        expense_date: r.expense_date ?? "",
+        amount: Number(r.amount ?? 0),
+        currency: r.currency ?? "",
+        merchant: r.merchant ?? "",
+        description: r.description ?? "",
+        category: r.category ?? "",
+        note: r.note ?? "",
+        image_path: r.image_path ?? "",
+        created_at: r.created_at ?? "",
+      }));
+      const monthlyStats = monthlyStatsStmt.all().map((r) => ({
+        category: r.category ?? "",
+        total: Number(r.total ?? 0),
+        currency: r.currency ?? "",
+      }));
+      return { recent, monthlyStats };
     },
   };
 }

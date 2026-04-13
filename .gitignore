@@ -4,5 +4,7 @@ dist/
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/receipt-uploads/
+ReceiptTracker/data/
 *.log
 .DS_Store

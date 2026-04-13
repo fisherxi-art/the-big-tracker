@@ -1,10 +1,11 @@
 import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
-import { existsSync, mkdirSync } from "fs";
-import { dirname, join } from "path";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "fs";
+import { dirname, extname, join } from "path";
 import { fileURLToPath } from "url";
-import { openDb, researchRepo, meetingsRepo } from "./db.js";
+import multer from "multer";
+import { openDb, researchRepo, meetingsRepo, expensesRepo } from "./db.js";
 import { augmentPasteForModel, extractHttpUrls, getLastFetchDebug } from "./urlExtract.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -53,9 +54,19 @@ function ensureDataDir() {
 
 const dbPath = resolveDbPath();
 ensureDataDir();
+const receiptUploadDir = join(DATA_DIR, "receipt-uploads");
+if (!existsSync(receiptUploadDir)) mkdirSync(receiptUploadDir, { recursive: true });
 const db = openDb(dbPath);
 const research = researchRepo(db);
 const meetings = meetingsRepo(db);
+const expenses = expensesRepo(db);
+
+const receiptUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, receiptUploadDir),
+    filename: (_req, file, cb) => cb(null, `${Date.now()}${extname(file.originalname)}`),
+  }),
+});
 
 async function fetchOpenRouterChatCompletion(body) {
   const key = process.env.OPENROUTER_API_KEY;
@@ -112,6 +123,34 @@ async function callOpenRouterVision(userContentParts) {
           "You transcribe images for a finance research app. Output ONLY the visible text. Preserve the original language and writing system (do not translate). Keep line breaks where helpful. If there is no legible text, reply exactly: (no text found). Do not describe the image or add commentary.",
       },
       { role: "user", content: userContentParts },
+    ],
+  };
+  return fetchOpenRouterChatCompletion(body);
+}
+
+const RECEIPT_EXTRACT_SYSTEM = `You are an expense receipt analyzer. Extract information from the receipt image.
+Return ONLY a valid JSON object with these keys:
+- date (string, YYYY-MM-DD format)
+- amount (number)
+- currency (string, e.g. HKD)
+- merchant (string, shop name)
+- description (string, what was bought)
+- category (string, choose from: Groceries, Dining, Transport, Utilities, Shopping, Other)`;
+
+/** Receipt image → structured expense fields (vision model + JSON object). */
+async function callOpenRouterReceiptParse(dataUrl) {
+  const body = {
+    model: DEFAULT_VISION_MODEL,
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: RECEIPT_EXTRACT_SYSTEM },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Extract data from this receipt." },
+          { type: "image_url", image_url: { url: dataUrl } },
+        ],
+      },
     ],
   };
   return fetchOpenRouterChatCompletion(body);
@@ -507,6 +546,85 @@ app.delete("/api/meetings/:id", (req, res) => {
   }
 });
 
+app.post("/api/upload", receiptUpload.single("receipt"), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "No image uploaded" });
+    const mimeType = String(req.file.mimetype || "image/jpeg").slice(0, 120);
+    if (!/^image\/(png|jpe?g|gif|webp)$/i.test(mimeType)) {
+      try {
+        unlinkSync(req.file.path);
+      } catch {
+        /* ignore */
+      }
+      return res.status(400).json({ error: "Unsupported image type (use PNG, JPEG, GIF, or WebP)" });
+    }
+    const b64 = readFileSync(req.file.path).toString("base64");
+    const dataUrl = `data:${mimeType};base64,${b64}`;
+    const content = await callOpenRouterReceiptParse(dataUrl);
+    let parsedData;
+    try {
+      parsedData = parseModelJson(content);
+    } catch {
+      parsedData = {};
+    }
+    const filename = req.file.filename;
+    res.json({
+      image_path: `/uploads/${filename}`,
+      extracted: parsedData,
+    });
+  } catch (e) {
+    if (req.file?.path) {
+      try {
+        unlinkSync(req.file.path);
+      } catch {
+        /* ignore */
+      }
+    }
+    const msg = e.message || String(e);
+    const upstream = Number(e.status) || 500;
+    const noVision =
+      upstream === 404 ||
+      /no endpoints found|support image input|does not support multimodal/i.test(msg);
+    const status = noVision ? 502 : upstream >= 400 && upstream < 600 ? upstream : 500;
+    const extra =
+      noVision && status === 502
+        ? " Set OPENROUTER_VISION_MODEL to a vision-capable id from https://openrouter.ai/models (filter: image)."
+        : "";
+    res.status(status).json({ error: msg + extra });
+  }
+});
+
+app.post("/api/save", (req, res) => {
+  try {
+    const body = req.body || {};
+    const { date, amount, currency, merchant, description, category, note, image_path } = body;
+    if (!String(date ?? "").trim()) {
+      return res.status(400).json({ error: "date required" });
+    }
+    const out = expenses.insert({
+      expense_date: date,
+      amount,
+      currency,
+      merchant,
+      description,
+      category,
+      note,
+      image_path,
+    });
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/stats", (_, res) => {
+  try {
+    res.json(expenses.stats());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/ai/parse-research", async (req, res) => {
   try {
     const raw = (req.body && req.body.rawText) || "";
@@ -687,6 +805,18 @@ app.use((req, res, next) => {
   next();
 });
 
+/** Only redirect bare `/household`; `app.get("/household")` would also match `/household/` with strict routing off and loop 302. */
+app.use((req, res, next) => {
+  if (req.method !== "GET" && req.method !== "HEAD") return next();
+  const pathOnly = req.originalUrl.split(/[?#]/)[0];
+  if (pathOnly === "/household") {
+    return res.redirect(302, "/household/");
+  }
+  next();
+});
+app.use("/household", express.static(join(root, "ReceiptTracker/public")));
+app.use("/uploads", express.static(receiptUploadDir));
+
 if (isProd) {
   app.use(express.static(join(root, "dist")));
   app.get("*", (_, res) => {
@@ -702,6 +832,8 @@ if (isProd) {
   // Do not pass /api to Vite — it can answer with 404 before Express routes match in some setups.
   app.use((req, res, next) => {
     if (req.path.startsWith("/api")) return next();
+    if (req.path.startsWith("/household")) return next();
+    if (req.path.startsWith("/uploads")) return next();
     return vite.middlewares(req, res, next);
   });
 }
