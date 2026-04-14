@@ -74,6 +74,30 @@ function migrate(db) {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
     CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
+
+    CREATE TABLE IF NOT EXISTS expense_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      expense_id INTEGER NOT NULL,
+      item_name TEXT NOT NULL DEFAULT '',
+      amount REAL,
+      category TEXT NOT NULL DEFAULT '',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (expense_id) REFERENCES expenses(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_expense_items_expense_id ON expense_items(expense_id);
+
+    CREATE TABLE IF NOT EXISTS ai_jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      result TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_jobs_kind_status ON ai_jobs(kind, status);
+    CREATE INDEX IF NOT EXISTS idx_ai_jobs_created ON ai_jobs(created_at DESC);
   `);
   try {
     const cols = db.prepare("PRAGMA table_info(research)").all();
@@ -408,7 +432,92 @@ export function expensesRepo(db) {
     GROUP BY category, currency
   `);
 
-  retainStatements(db, [insertStmt, listRecent, monthlyStatsStmt]);
+  const getStmt = db.prepare(`
+    SELECT id, expense_date, amount, currency, merchant, description, category, note, image_path, created_at
+    FROM expenses WHERE id = ?
+  `);
+
+  const updateStmt = db.prepare(`
+    UPDATE expenses SET
+      expense_date = @expense_date,
+      amount = @amount,
+      currency = @currency,
+      merchant = @merchant,
+      description = @description,
+      category = @category,
+      note = @note,
+      image_path = @image_path
+    WHERE id = @id
+  `);
+
+  const deleteStmt = db.prepare(`DELETE FROM expenses WHERE id = ?`);
+  const listItemsStmt = db.prepare(`
+    SELECT id, expense_id, item_name, amount, category, created_at
+    FROM expense_items
+    WHERE expense_id = ?
+    ORDER BY id ASC
+  `);
+  const deleteItemsStmt = db.prepare(`DELETE FROM expense_items WHERE expense_id = ?`);
+  const insertItemStmt = db.prepare(`
+    INSERT INTO expense_items (expense_id, item_name, amount, category)
+    VALUES (@expense_id, @item_name, @amount, @category)
+  `);
+
+  retainStatements(db, [
+    insertStmt,
+    listRecent,
+    monthlyStatsStmt,
+    getStmt,
+    updateStmt,
+    deleteStmt,
+    listItemsStmt,
+    deleteItemsStmt,
+    insertItemStmt,
+  ]);
+
+  function rowToExpense(r) {
+    if (!r) return null;
+    return {
+      id: r.id,
+      expense_date: r.expense_date ?? "",
+      amount: Number(r.amount ?? 0),
+      currency: r.currency ?? "",
+      merchant: r.merchant ?? "",
+      description: r.description ?? "",
+      category: r.category ?? "",
+      note: r.note ?? "",
+      image_path: r.image_path ?? "",
+      created_at: r.created_at ?? "",
+    };
+  }
+
+  function rowToExpenseItem(r) {
+    if (!r) return null;
+    return {
+      id: r.id,
+      expense_id: r.expense_id,
+      item_name: r.item_name ?? "",
+      amount: Number(r.amount ?? 0),
+      category: r.category ?? "",
+      created_at: r.created_at ?? "",
+    };
+  }
+
+  function normalizeItems(items) {
+    if (!Array.isArray(items)) return [];
+    return items
+      .map((x) => {
+        if (!x || typeof x !== "object") return null;
+        const name =
+          String(x.item_name ?? x.name ?? x.item ?? x.description ?? "").trim();
+        const category = String(x.category ?? "").trim();
+        const amountRaw = Number(x.amount ?? x.price ?? x.cost ?? 0);
+        const amount = Number.isFinite(amountRaw) ? amountRaw : 0;
+        if (!name) return null;
+        return { item_name: name.slice(0, 300), category: category.slice(0, 120), amount };
+      })
+      .filter(Boolean);
+  }
 
   return {
     /**
@@ -430,25 +539,210 @@ export function expensesRepo(db) {
       return { success: true, id: Number(result.lastInsertRowid) };
     },
 
+    getById(id) {
+      const base = rowToExpense(getStmt.get(id));
+      if (!base) return null;
+      return {
+        ...base,
+        items: listItemsStmt.all(id).map((r) => rowToExpenseItem(r)).filter(Boolean),
+      };
+    },
+
+    /**
+     * @param {number} id
+     * @param {object} payload
+     */
+    update(id, payload) {
+      const cur = getStmt.get(id);
+      if (!cur) return null;
+      const prev = rowToExpense(cur);
+      const amount = Number(payload.amount ?? prev.amount);
+      updateStmt.run({
+        expense_date: String(
+          payload.expense_date ?? payload.date ?? prev.expense_date ?? ""
+        ).trim(),
+        amount: Number.isFinite(amount) ? amount : 0,
+        currency: String(payload.currency ?? prev.currency ?? "").trim(),
+        merchant: String(payload.merchant ?? prev.merchant ?? "").trim(),
+        description: String(payload.description ?? prev.description ?? "").trim(),
+        category: String(payload.category ?? prev.category ?? "").trim(),
+        note: String(payload.note ?? prev.note ?? "").trim(),
+        image_path: String(payload.image_path ?? prev.image_path ?? "").trim(),
+        id,
+      });
+      return this.getById(id);
+    },
+
+    delete(id) {
+      const r = deleteStmt.run(id);
+      return r.changes > 0;
+    },
+
+    /**
+     * Replace all item rows for one expense.
+     * @param {number} expenseId
+     * @param {object[]} items
+     */
+    replaceItems(expenseId, items) {
+      deleteItemsStmt.run(expenseId);
+      const normalized = normalizeItems(items);
+      for (const it of normalized) {
+        insertItemStmt.run({
+          expense_id: expenseId,
+          item_name: it.item_name,
+          amount: it.amount,
+          category: it.category,
+        });
+      }
+      return normalized.length;
+    },
+
+    listItems(expenseId) {
+      return listItemsStmt.all(expenseId).map((r) => rowToExpenseItem(r)).filter(Boolean);
+    },
+
     stats() {
-      const recent = listRecent.all().map((r) => ({
-        id: r.id,
-        expense_date: r.expense_date ?? "",
-        amount: Number(r.amount ?? 0),
-        currency: r.currency ?? "",
-        merchant: r.merchant ?? "",
-        description: r.description ?? "",
-        category: r.category ?? "",
-        note: r.note ?? "",
-        image_path: r.image_path ?? "",
-        created_at: r.created_at ?? "",
-      }));
+      const recent = listRecent.all().map((r) => rowToExpense(r));
       const monthlyStats = monthlyStatsStmt.all().map((r) => ({
         category: r.category ?? "",
         total: Number(r.total ?? 0),
         currency: r.currency ?? "",
       }));
       return { recent, monthlyStats };
+    },
+  };
+}
+
+/** @typedef {{ kind: string, status: string, payload: object, result?: object|null, error?: string|null, id: number, created_at: string, updated_at: string }} AiJobRow */
+
+/** @param {DatabaseSync} db */
+export function aiJobsRepo(db) {
+  const insertStmt = db.prepare(`
+    INSERT INTO ai_jobs (kind, status, payload, result, error, created_at, updated_at)
+    VALUES (@kind, @status, @payload, @result, @error, @created_at, @updated_at)
+  `);
+  const getStmt = db.prepare(`SELECT * FROM ai_jobs WHERE id = ?`);
+  const updateStmt = db.prepare(`
+    UPDATE ai_jobs SET
+      status = @status,
+      result = @result,
+      error = @error,
+      updated_at = @updated_at
+    WHERE id = @id
+  `);
+  const delStmt = db.prepare(`DELETE FROM ai_jobs WHERE id = ?`);
+  const listRecentStmt = db.prepare(`
+    SELECT * FROM ai_jobs ORDER BY id DESC LIMIT ?
+  `);
+  const claimPendingStmt = db.prepare(`
+    UPDATE ai_jobs SET status = 'processing', updated_at = ? WHERE id = ? AND status = 'pending'
+  `);
+
+  retainStatements(db, [insertStmt, getStmt, updateStmt, delStmt, listRecentStmt, claimPendingStmt]);
+
+  function rowToApi(r) {
+    if (!r) return null;
+    let payload = {};
+    let result = null;
+    try {
+      payload = r.payload ? JSON.parse(String(r.payload)) : {};
+    } catch {
+      payload = {};
+    }
+    try {
+      result = r.result == null || r.result === "" ? null : JSON.parse(String(r.result));
+    } catch {
+      result = null;
+    }
+    return {
+      id: r.id,
+      kind: r.kind,
+      status: r.status,
+      payload,
+      result,
+      error: r.error ?? null,
+      created_at: r.created_at ?? "",
+      updated_at: r.updated_at ?? "",
+    };
+  }
+
+  const nowIso = () => new Date().toISOString();
+
+  return {
+    /** @param {{ kind: string, status?: string, payload?: object }} p */
+    create(p) {
+      const ts = nowIso();
+      const payloadJson = JSON.stringify(p.payload ?? {});
+      const res = insertStmt.run({
+        kind: p.kind,
+        status: p.status ?? "pending",
+        payload: payloadJson,
+        result: null,
+        error: null,
+        created_at: ts,
+        updated_at: ts,
+      });
+      const id = Number(res.lastInsertRowid);
+      return this.getById(id);
+    },
+    getById(id) {
+      return rowToApi(getStmt.get(id));
+    },
+    /** @param {number} id @param {{ status?: string, result?: object|null, error?: string|null }} fields */
+    update(id, fields) {
+      const cur = getStmt.get(id);
+      if (!cur) return null;
+      const prev = rowToApi(cur);
+      if (!prev) return null;
+      const status = fields.status ?? prev.status;
+      let resultJson = null;
+      if (fields.result !== undefined) {
+        resultJson = fields.result == null ? null : JSON.stringify(fields.result);
+      } else {
+        resultJson = cur.result ?? null;
+      }
+      const err =
+        fields.error !== undefined ? (fields.error == null ? null : String(fields.error)) : cur.error;
+      const ts = nowIso();
+      updateStmt.run({
+        id,
+        status,
+        result: resultJson,
+        error: err,
+        updated_at: ts,
+      });
+      return this.getById(id);
+    },
+    delete(id) {
+      const r = delStmt.run(id);
+      return r.changes > 0;
+    },
+    /** @returns {boolean} true if this call transitioned pending → processing */
+    claimPending(id) {
+      const ts = nowIso();
+      const r = claimPendingStmt.run(ts, id);
+      return r.changes > 0;
+    },
+    /**
+     * @param {{ kind?: string, statuses?: string[], limit?: number }} [opts]
+     */
+    list(opts = {}) {
+      const limit = Math.min(Math.max(Number(opts.limit) || 100, 1), 500);
+      const rows = listRecentStmt.all(limit).map(rowToApi).filter(Boolean);
+      let out = rows;
+      if (opts.kind) out = out.filter((j) => j.kind === opts.kind);
+      if (opts.statuses?.length)
+        out = out.filter((j) => opts.statuses.includes(j.status));
+      return out;
+    },
+    /** Mark interrupted server runs as pending so workers can retry. */
+    resetStaleProcessing() {
+      const ts = nowIso();
+      const r = db.prepare(`
+        UPDATE ai_jobs SET status = 'pending', updated_at = ?
+        WHERE status = 'processing'
+      `).run(ts);
+      return r.changes;
     },
   };
 }

@@ -9,7 +9,7 @@ import {
   type SyntheticEvent,
 } from "react";
 import type { ClipboardEvent, DragEvent } from "react";
-import { api, type Meeting, type Research } from "./api";
+import { api, type AiJob, type Meeting, type Research } from "./api";
 
 type Tab = "research" | "meetings";
 
@@ -391,6 +391,8 @@ export default function App() {
   const [selR, setSelR] = useState<Research | null>(null);
   const [selM, setSelM] = useState<Meeting | null>(null);
   const [pasteText, setPasteText] = useState("");
+  /** Server-side parse-paste jobs still running (poll until complete). */
+  const [parsePasteJobIds, setParsePasteJobIds] = useState<number[]>([]);
   const [aiBusy, setAiBusy] = useState(false);
   const [showAiDebug, setShowAiDebug] = useState(false);
   const [showFetchDebug, setShowFetchDebug] = useState(false);
@@ -445,6 +447,15 @@ export default function App() {
       setHealth(h);
       setResearch(r);
       setMeetings(m);
+      try {
+        const openJobs = await api.ai.listJobs({ kind: "parse_paste", limit: 80 });
+        const active = openJobs.jobs.filter(
+          (j: AiJob) => j.status === "pending" || j.status === "processing"
+        );
+        setParsePasteJobIds(active.map((j) => j.id));
+      } catch {
+        /* ignore */
+      }
     } catch (e) {
       setErr(e instanceof Error ? e.message : "Load failed");
     } finally {
@@ -520,7 +531,79 @@ export default function App() {
     if (selM && !filteredMeetings.some((m) => m.id === selM.id)) setSelM(null);
   }, [filteredMeetings, selM]);
 
-  /** Classify + create DB rows from raw text (used by button and after image OCR). */
+  useEffect(() => {
+    if (parsePasteJobIds.length === 0) return;
+    let cancelled = false;
+    const tick = async () => {
+      const ids = [...parsePasteJobIds];
+      for (const jobId of ids) {
+        try {
+          const job = await api.ai.getJob(jobId);
+          if (cancelled) return;
+          if (job.status === "completed" && job.result) {
+            const [rList, mList] = await Promise.all([api.research.list(), api.meetings.list()]);
+            if (cancelled) return;
+            setResearch(rList);
+            setMeetings(mList);
+            const cr = job.result.createdResearchIds ?? [];
+            const cm = job.result.createdMeetingId ?? null;
+            const fetchSummary = job.result.fetchSummary;
+            if (showAiDebug && job.result.debug?.userMessageChars != null) {
+              setParsePasteDebug((prev) => ({
+                ...prev,
+                parsePasteSystemPrompt:
+                  job.result?.debug?.parsePasteSystemPrompt ?? prev?.parsePasteSystemPrompt,
+                userMessageChars: job.result?.debug?.userMessageChars ?? prev?.userMessageChars,
+              }));
+            }
+            if (cr.length) {
+              const first = rList.find((x) => cr.includes(x.id));
+              if (first) setSelR(first);
+            }
+            if (cm != null) {
+              const mm = mList.find((x) => x.id === cm);
+              if (mm) setSelM(mm);
+            }
+            const hadR = cr.length > 0;
+            const hadM = cm != null;
+            if (hadR && hadM) setTab("research");
+            else if (hadM && !hadR) setTab("meetings");
+            else if (hadR) setTab("research");
+            const parts: string[] = [];
+            if (hadR) parts.push(cr.length === 1 ? "1 research note" : `${cr.length} research notes`);
+            if (hadM) parts.push("meeting");
+            let msg = `Saved ${parts.join(" & ")}.`;
+            if (fetchSummary && fetchSummary.urlsDetected > 0) {
+              if (!fetchSummary.urlFetchEnabled) {
+                msg += ` ${fetchSummary.urlsDetected} link(s) in paste — server URL fetch is off (Mozilla Readability not used).`;
+              } else {
+                msg += ` URL fetch: ${fetchSummary.articlesExtracted} article(s) extracted (${fetchSummary.extractedTotalChars} chars) → sent to AI with Readability.`;
+                if (fetchSummary.fallbackFromUrl) msg += " (Fallback note from fetch.)";
+              }
+            }
+            setSuccess(msg);
+            setParsePasteJobIds((p) => p.filter((x) => x !== jobId));
+            void api.ai.deleteJob(jobId).catch(() => {});
+            if (showFetchDebug) void loadFetchDebug();
+          } else if (job.status === "failed") {
+            setErr(job.error || "AI job failed");
+            setParsePasteJobIds((p) => p.filter((x) => x !== jobId));
+          }
+        } catch (e) {
+          setErr(e instanceof Error ? e.message : "Job poll failed");
+          setParsePasteJobIds((p) => p.filter((x) => x !== jobId));
+        }
+      }
+    };
+    void tick();
+    const t = setInterval(() => void tick(), 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [parsePasteJobIds, showAiDebug, showFetchDebug, loadFetchDebug]);
+
+  /** Queue classify + DB rows on the server (used by button and after image OCR). */
   async function parseAndSaveFromText(
     rawText: string,
     opts?: { sourceImages?: string[] }
@@ -536,56 +619,17 @@ export default function App() {
     const sourceImagePayload =
       imgs.length === 1 ? imgs[0] : imgs.length > 1 ? JSON.stringify(imgs) : undefined;
     try {
-      const { research: rList, meeting: mData, debug, fetchSummary } = await api.ai.parsePaste(text, {
+      const enqueueOpts: { debugPrompts?: boolean; sourceImage?: string } = {
         debugPrompts: showAiDebug,
-      });
-      if (showAiDebug && debug?.userMessageChars != null) {
-        setParsePasteDebug((prev) => ({
-          ...prev,
-          parsePasteSystemPrompt: debug?.parsePasteSystemPrompt ?? prev?.parsePasteSystemPrompt,
-          userMessageChars: debug.userMessageChars,
-        }));
-      }
-      const parts: string[] = [];
-      const createdR: Research[] = [];
-      for (const rData of rList) {
-        const c = await api.research.create(
-          sourceImagePayload ? { ...rData, sourceImage: sourceImagePayload } : rData
-        );
-        createdR.push(c);
-      }
-      if (createdR.length) {
-        setResearch((prev) => [...createdR, ...prev]);
-        setSelR(createdR[0]);
-        parts.push(
-          createdR.length === 1 ? "1 research note" : `${createdR.length} research notes`
-        );
-      }
-      if (mData) {
-        const c = await api.meetings.create(
-          sourceImagePayload ? { ...mData, sourceImage: sourceImagePayload } : mData
-        );
-        setMeetings((prev) => [c, ...prev]);
-        setSelM(c);
-        parts.push("meeting");
-      }
+      };
+      if (sourceImagePayload) enqueueOpts.sourceImage = sourceImagePayload;
+      const { job_id } = await api.ai.enqueueParsePaste(text, enqueueOpts);
+      setParsePasteJobIds((prev) => (prev.includes(job_id) ? prev : [...prev, job_id]));
       setPasteText("");
-      if (createdR.length && mData) setTab("research");
-      else if (mData && !createdR.length) setTab("meetings");
-      else if (createdR.length) setTab("research");
-      {
-        let msg = `Saved ${parts.join(" & ")}.`;
-        if (fetchSummary && fetchSummary.urlsDetected > 0) {
-          if (!fetchSummary.urlFetchEnabled) {
-            msg += ` ${fetchSummary.urlsDetected} link(s) in paste — server URL fetch is off (Mozilla Readability not used).`;
-          } else {
-            msg += ` URL fetch: ${fetchSummary.articlesExtracted} article(s) extracted (${fetchSummary.extractedTotalChars} chars) → sent to AI with Readability.`;
-            if (fetchSummary.fallbackFromUrl) msg += " (Fallback note from fetch.)";
-          }
-        }
-        setSuccess(msg);
-      }
-      if (parts.length) pendingSourceImagesRef.current = null;
+      setSuccess(
+        "Submitted — processing on the server. You can leave this page; notes appear when the job finishes."
+      );
+      pendingSourceImagesRef.current = null;
     } catch (e) {
       setErr(e instanceof Error ? e.message : "AI parse failed");
     } finally {
@@ -809,6 +853,11 @@ export default function App() {
               {aiBusy ? "Working…" : "Identify & save"}
             </button>
           </div>
+          {parsePasteJobIds.length > 0 && (
+            <p className="mt-1.5 text-[10px] sm:text-[11px] text-muted-foreground leading-snug">
+              {parsePasteJobIds.length} identify job(s) processing on the server — safe to leave this page.
+            </p>
+          )}
           <div className="mt-1.5 sm:mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
             <label className="flex items-center gap-1.5 text-[10px] sm:text-[11px] text-muted-foreground cursor-pointer touch-manipulation">
               <input

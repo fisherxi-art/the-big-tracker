@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync } from "fs";
 import { dirname, extname, join } from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
-import { openDb, researchRepo, meetingsRepo, expensesRepo } from "./db.js";
+import { openDb, researchRepo, meetingsRepo, expensesRepo, aiJobsRepo } from "./db.js";
 import { augmentPasteForModel, extractHttpUrls, getLastFetchDebug } from "./urlExtract.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -60,6 +60,52 @@ const db = openDb(dbPath);
 const research = researchRepo(db);
 const meetings = meetingsRepo(db);
 const expenses = expensesRepo(db);
+const aiJobs = aiJobsRepo(db);
+
+/** Best-effort: jobs left in `processing` after a crash become `pending` again. */
+aiJobs.resetStaleProcessing();
+
+function resumePendingAiJobs() {
+  const pending = aiJobs.list({ statuses: ["pending"], limit: 200 });
+  for (const j of pending) {
+    if (j.kind === "parse_paste") enqueueParsePasteJob(j.id);
+    else if (j.kind === "receipt") enqueueReceiptJob(j.id);
+  }
+}
+resumePendingAiJobs();
+
+const AI_JOB_CONCURRENCY = Math.min(
+  8,
+  Math.max(1, Number(process.env.AI_JOB_CONCURRENCY) || 2)
+);
+let aiSlotWaiters = [];
+let aiSlotsInUse = 0;
+function acquireAiSlot() {
+  return new Promise((resolve) => {
+    if (aiSlotsInUse < AI_JOB_CONCURRENCY) {
+      aiSlotsInUse++;
+      resolve();
+    } else {
+      aiSlotWaiters.push(resolve);
+    }
+  });
+}
+function releaseAiSlot() {
+  aiSlotsInUse--;
+  const next = aiSlotWaiters.shift();
+  if (next) {
+    aiSlotsInUse++;
+    next();
+  }
+}
+async function withAiSlot(fn) {
+  await acquireAiSlot();
+  try {
+    return await fn();
+  } finally {
+    releaseAiSlot();
+  }
+}
 
 const receiptUpload = multer({
   storage: multer.diskStorage({
@@ -135,7 +181,11 @@ Return ONLY a valid JSON object with these keys:
 - currency (string, e.g. HKD)
 - merchant (string, shop name)
 - description (string, what was bought)
-- category (string, choose from: Groceries, Dining, Transport, Utilities, Shopping, Other)`;
+- category (string, choose from: Groceries, Dining, Transport, Utilities, Shopping, Other)
+- items (array of line items; if none identifiable use []). Each item object:
+  - item_name (string, required)
+  - amount (number, price/cost for that line; 0 if unknown)
+  - category (string, choose from: Groceries, Dining, Transport, Utilities, Shopping, Other; use Other when unsure)`;
 
 /** Receipt image → structured expense fields (vision model + JSON object). */
 async function callOpenRouterReceiptParse(dataUrl) {
@@ -326,6 +376,225 @@ const PARSE_RESEARCH_SYSTEM_PROMPT = `You extract equity research metadata from 
 Do NOT include full pasted text in JSON — the app stores the user's original message separately. Never output "rawText".
 Use company+ticker for company notes; for sector pieces use category industry and fill theme.
 Write all extracted strings in the same language as the source text; do not translate unless the source is English.`;
+
+/**
+ * Shared parse-paste pipeline (sync route + async job worker).
+ * @returns {Promise<{ research: object[], meeting: object|null, fetchSummary: object, fallbackFromUrl: boolean, _debug?: object }>}
+ */
+async function runParsePasteCore(raw, debugPrompts) {
+  const rawStr = String(raw ?? "").trim();
+  if (!rawStr) {
+    const err = new Error("rawText required");
+    err.status = 400;
+    throw err;
+  }
+  const { textForModel, fetchResults, extractedArticles } = urlFetchEnabled()
+    ? await augmentPasteForModel(rawStr)
+    : { textForModel: rawStr, fetchResults: [], extractedArticles: [] };
+
+  const urlsDetected = extractHttpUrls(rawStr).length;
+  const fetchSummary = {
+    urlFetchEnabled: urlFetchEnabled(),
+    urlsDetected,
+    articlesExtracted: extractedArticles.length,
+    extractedTotalChars: extractedArticles.reduce((s, a) => s + (a.text?.length || 0), 0),
+    perUrl: fetchResults.map((r) => ({
+      url: r.url,
+      ok: r.ok,
+      chars: r.chars,
+      error: r.error,
+      title: r.title,
+    })),
+  };
+
+  const text = await callOpenRouter(
+    [
+      { role: "system", content: PARSE_PASTE_SYSTEM_PROMPT },
+      { role: "user", content: textForModel.slice(0, 120000) },
+    ],
+    true
+  );
+  let parsed;
+  try {
+    parsed = parseModelJson(text);
+  } catch {
+    const err = new Error("Model did not return JSON");
+    err.status = 502;
+    err.raw = text;
+    throw err;
+  }
+  const rawList = normalizeResearchArray(parsed?.researchItems ?? parsed?.research);
+  const shaped = rawList.map((item) => normalizeResearchNoteShape(item)).filter(Boolean);
+  let researchOut = attachOriginalPasteToResearchNotes(shaped, rawStr);
+  let meeting = parsed?.meeting ?? null;
+  if (meeting && typeof meeting === "object") {
+    meeting = attachOriginalPasteToMeeting(meeting, rawStr);
+  }
+  let fallbackFromUrl = false;
+  if (researchOut.length === 0 && meeting === null && extractedArticles.length > 0) {
+    const fb = buildFallbackResearchFromArticle(extractedArticles[0]);
+    researchOut = attachOriginalPasteToResearchNotes([fb], rawStr);
+    fallbackFromUrl = true;
+  }
+  if (researchOut.length === 0 && meeting === null) {
+    let errMsg =
+      "Could not identify research or meeting content in this paste. Try a clearer broker note or invite.";
+    if (urlsDetected > 0) {
+      if (!fetchSummary.urlFetchEnabled) {
+        errMsg +=
+          " Links were found but URL fetch is off on the server (set URL_FETCH=1 or remove URL_FETCH=0).";
+      } else if (fetchSummary.articlesExtracted === 0) {
+        errMsg += ` ${urlsDetected} link(s) found but no article text was extracted (blocked site, login wall, or encoding). Use “Show last URL fetch (debug)”.`;
+      }
+    }
+    const err = new Error(errMsg);
+    err.status = 422;
+    err.fetchSummary = { ...fetchSummary, fallbackFromUrl };
+    throw err;
+  }
+  const out = {
+    research: researchOut,
+    meeting,
+    fetchSummary: { ...fetchSummary, fallbackFromUrl },
+  };
+  if (debugPrompts) {
+    out._debug = {
+      parsePasteSystemPrompt: PARSE_PASTE_SYSTEM_PROMPT,
+      userMessageChars: rawStr.length,
+      modelInputChars: textForModel.length,
+      urlFetch: fetchResults,
+      fallbackFromUrl,
+    };
+  }
+  return out;
+}
+
+/**
+ * Insert parsed research/meeting rows (same as client after parse-paste).
+ * @param {string|undefined} sourceImagePayload single data URL or JSON array string
+ */
+function commitParsePasteResults(researchList, meeting, sourceImagePayload) {
+  const createdResearchIds = [];
+  let createdMeetingId = null;
+  for (const rData of researchList) {
+    const row = research.insert(
+      sourceImagePayload ? { ...rData, sourceImage: sourceImagePayload } : rData
+    );
+    if (row) createdResearchIds.push(row.id);
+  }
+  if (meeting) {
+    const row = meetings.insert(
+      sourceImagePayload ? { ...meeting, sourceImage: sourceImagePayload } : meeting
+    );
+    if (row) createdMeetingId = row.id;
+  }
+  return { createdResearchIds, createdMeetingId };
+}
+
+async function processParsePasteJob(jobId) {
+  const job = aiJobs.getById(jobId);
+  if (!job || job.kind !== "parse_paste") return;
+  if (!aiJobs.claimPending(jobId)) return;
+  const rawText = String(job.payload?.rawText ?? "").trim();
+  if (!rawText) {
+    aiJobs.update(jobId, { status: "failed", error: "rawText missing" });
+    return;
+  }
+  const debugPrompts = Boolean(job.payload?.debugPrompts);
+  const sourceImagePayload =
+    typeof job.payload?.sourceImage === "string" && job.payload.sourceImage.length > 0
+      ? job.payload.sourceImage
+      : undefined;
+  try {
+    const out = await withAiSlot(() => runParsePasteCore(rawText, debugPrompts));
+    const { createdResearchIds, createdMeetingId } = commitParsePasteResults(
+      out.research,
+      out.meeting,
+      sourceImagePayload
+    );
+    aiJobs.update(jobId, {
+      status: "completed",
+      result: {
+        createdResearchIds,
+        createdMeetingId,
+        fetchSummary: out.fetchSummary,
+        ...(out._debug ? { debug: out._debug } : {}),
+      },
+      error: null,
+    });
+  } catch (e) {
+    const msg = e.message || String(e);
+    const st = Number(e.status) || 500;
+    const fetchSummary = e.fetchSummary;
+    aiJobs.update(jobId, {
+      status: "failed",
+      error: msg,
+      result: fetchSummary ? { fetchSummary } : null,
+    });
+  }
+}
+
+async function processReceiptJob(jobId) {
+  const job = aiJobs.getById(jobId);
+  if (!job || job.kind !== "receipt") return;
+  if (!aiJobs.claimPending(jobId)) return;
+  const filename = String(job.payload?.filename ?? "");
+  if (!filename) {
+    aiJobs.update(jobId, { status: "failed", error: "Missing receipt file reference" });
+    return;
+  }
+  const filePath = join(receiptUploadDir, filename);
+  const image_path = String(job.payload?.image_path ?? `/uploads/${filename}`);
+  try {
+    if (!existsSync(filePath)) {
+      throw new Error("Receipt file not found on server");
+    }
+    const mimeType = String(job.payload?.mimeType || "image/jpeg").slice(0, 120);
+    const b64 = readFileSync(filePath).toString("base64");
+    const dataUrl = `data:${mimeType};base64,${b64}`;
+    const content = await withAiSlot(() => callOpenRouterReceiptParse(dataUrl));
+    let parsedData;
+    try {
+      parsedData = parseModelJson(content);
+    } catch {
+      parsedData = {};
+    }
+    aiJobs.update(jobId, {
+      status: "completed",
+      result: { extracted: parsedData, image_path },
+      error: null,
+    });
+  } catch (e) {
+    const msg = e.message || String(e);
+    const upstream = Number(e.status) || 500;
+    const noVision =
+      upstream === 404 ||
+      /no endpoints found|support image input|does not support multimodal/i.test(msg);
+    const extra =
+      noVision
+        ? " Set OPENROUTER_VISION_MODEL to a vision-capable id from https://openrouter.ai/models (filter: image)."
+        : "";
+    aiJobs.update(jobId, { status: "failed", error: msg + extra });
+  }
+}
+
+function enqueueParsePasteJob(jobId) {
+  setImmediate(() => {
+    void processParsePasteJob(jobId).catch((e) => {
+      console.error("processParsePasteJob", jobId, e);
+      aiJobs.update(jobId, { status: "failed", error: e.message || String(e) });
+    });
+  });
+}
+
+function enqueueReceiptJob(jobId) {
+  setImmediate(() => {
+    void processReceiptJob(jobId).catch((e) => {
+      console.error("processReceiptJob", jobId, e);
+      aiJobs.update(jobId, { status: "failed", error: e.message || String(e) });
+    });
+  });
+}
 
 const app = express();
 app.use(cors());
@@ -558,19 +827,17 @@ app.post("/api/upload", receiptUpload.single("receipt"), async (req, res) => {
       }
       return res.status(400).json({ error: "Unsupported image type (use PNG, JPEG, GIF, or WebP)" });
     }
-    const b64 = readFileSync(req.file.path).toString("base64");
-    const dataUrl = `data:${mimeType};base64,${b64}`;
-    const content = await callOpenRouterReceiptParse(dataUrl);
-    let parsedData;
-    try {
-      parsedData = parseModelJson(content);
-    } catch {
-      parsedData = {};
-    }
     const filename = req.file.filename;
-    res.json({
-      image_path: `/uploads/${filename}`,
-      extracted: parsedData,
+    const image_path = `/uploads/${filename}`;
+    const job = aiJobs.create({
+      kind: "receipt",
+      payload: { filename, mimeType, image_path },
+    });
+    enqueueReceiptJob(job.id);
+    res.status(202).json({
+      job_id: job.id,
+      status: "pending",
+      image_path,
     });
   } catch (e) {
     if (req.file?.path) {
@@ -581,26 +848,28 @@ app.post("/api/upload", receiptUpload.single("receipt"), async (req, res) => {
       }
     }
     const msg = e.message || String(e);
-    const upstream = Number(e.status) || 500;
-    const noVision =
-      upstream === 404 ||
-      /no endpoints found|support image input|does not support multimodal/i.test(msg);
-    const status = noVision ? 502 : upstream >= 400 && upstream < 600 ? upstream : 500;
-    const extra =
-      noVision && status === 502
-        ? " Set OPENROUTER_VISION_MODEL to a vision-capable id from https://openrouter.ai/models (filter: image)."
-        : "";
-    res.status(status).json({ error: msg + extra });
+    res.status(500).json({ error: msg });
   }
 });
 
 app.post("/api/save", (req, res) => {
   try {
     const body = req.body || {};
-    const { date, amount, currency, merchant, description, category, note, image_path } = body;
-    if (!String(date ?? "").trim()) {
-      return res.status(400).json({ error: "date required" });
+    const jobId = body.job_id != null ? Number(body.job_id) : null;
+    let image_path = body.image_path;
+    let extractedFromJob = null;
+    if (jobId && Number.isFinite(jobId)) {
+      const job = aiJobs.getById(jobId);
+      if (!job || job.kind !== "receipt") {
+        return res.status(400).json({ error: "Invalid job_id" });
+      }
+      if (job.status !== "completed") {
+        return res.status(400).json({ error: "Receipt analysis is not finished yet" });
+      }
+      image_path = job.result?.image_path ?? job.payload?.image_path ?? image_path;
+      extractedFromJob = job.result?.extracted ?? null;
     }
+    const { date, amount, currency, merchant, description, category, note } = body;
     const out = expenses.insert({
       expense_date: date,
       amount,
@@ -611,6 +880,14 @@ app.post("/api/save", (req, res) => {
       note,
       image_path,
     });
+    const itemsFromBody = Array.isArray(body.items) ? body.items : null;
+    const itemsFromAi = Array.isArray(extractedFromJob?.items) ? extractedFromJob.items : null;
+    if (itemsFromBody || itemsFromAi) {
+      expenses.replaceItems(out.id, itemsFromBody || itemsFromAi || []);
+    }
+    if (jobId && Number.isFinite(jobId)) {
+      aiJobs.delete(jobId);
+    }
     res.json(out);
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -620,6 +897,54 @@ app.post("/api/save", (req, res) => {
 app.get("/api/stats", (_, res) => {
   try {
     res.json(expenses.stats());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/expenses/:id", (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const row = expenses.getById(id);
+    if (!row) return res.status(404).json({ error: "Not found" });
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/expenses/:id", (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const body = req.body || {};
+    let row = expenses.update(id, {
+      date: body.date,
+      expense_date: body.expense_date,
+      amount: body.amount,
+      currency: body.currency,
+      merchant: body.merchant,
+      description: body.description,
+      category: body.category,
+      note: body.note,
+      image_path: body.image_path,
+    });
+    if (!row) return res.status(404).json({ error: "Not found" });
+    if (Array.isArray(body.items)) {
+      expenses.replaceItems(id, body.items);
+      row = expenses.getById(id);
+    }
+    res.json(row);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/expenses/:id", (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const ok = expenses.delete(id);
+    if (!ok) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -674,84 +999,92 @@ app.post("/api/ai/parse-paste", async (req, res) => {
     const raw = (req.body && req.body.rawText) || "";
     if (!raw.trim()) return res.status(400).json({ error: "rawText required" });
     const debugPrompts = Boolean(req.body?.debugPrompts);
-    const { textForModel, fetchResults, extractedArticles } = urlFetchEnabled()
-      ? await augmentPasteForModel(raw)
-      : { textForModel: raw, fetchResults: [], extractedArticles: [] };
-
-    const urlsDetected = extractHttpUrls(raw).length;
-    const fetchSummary = {
-      urlFetchEnabled: urlFetchEnabled(),
-      urlsDetected,
-      articlesExtracted: extractedArticles.length,
-      extractedTotalChars: extractedArticles.reduce((s, a) => s + (a.text?.length || 0), 0),
-      perUrl: fetchResults.map((r) => ({
-        url: r.url,
-        ok: r.ok,
-        chars: r.chars,
-        error: r.error,
-        title: r.title,
-      })),
-    };
-
-    const text = await callOpenRouter(
-      [
-        { role: "system", content: PARSE_PASTE_SYSTEM_PROMPT },
-        { role: "user", content: textForModel.slice(0, 120000) },
-      ],
-      true
-    );
-    let parsed;
     try {
-      parsed = parseModelJson(text);
-    } catch {
-      return res.status(502).json({ error: "Model did not return JSON", raw: text });
-    }
-    const rawList = normalizeResearchArray(
-      parsed?.researchItems ?? parsed?.research
-    );
-    const shaped = rawList
-      .map((item) => normalizeResearchNoteShape(item))
-      .filter(Boolean);
-    let research = attachOriginalPasteToResearchNotes(shaped, raw);
-    let meeting = parsed?.meeting ?? null;
-    if (meeting && typeof meeting === "object") {
-      meeting = attachOriginalPasteToMeeting(meeting, raw);
-    }
-    let fallbackFromUrl = false;
-    if (research.length === 0 && meeting === null && extractedArticles.length > 0) {
-      const fb = buildFallbackResearchFromArticle(extractedArticles[0]);
-      research = attachOriginalPasteToResearchNotes([fb], raw);
-      fallbackFromUrl = true;
-    }
-    if (research.length === 0 && meeting === null) {
-      let errMsg =
-        "Could not identify research or meeting content in this paste. Try a clearer broker note or invite.";
-      if (urlsDetected > 0) {
-        if (!fetchSummary.urlFetchEnabled) {
-          errMsg +=
-            " Links were found but URL fetch is off on the server (set URL_FETCH=1 or remove URL_FETCH=0).";
-        } else if (fetchSummary.articlesExtracted === 0) {
-          errMsg += ` ${urlsDetected} link(s) found but no article text was extracted (blocked site, login wall, or encoding). Use “Show last URL fetch (debug)”.`;
-        }
-      }
-      return res.status(422).json({
-        error: errMsg,
-        fetchSummary: { ...fetchSummary, fallbackFromUrl },
+      const out = await runParsePasteCore(raw, debugPrompts);
+      res.json({
+        research: out.research,
+        meeting: out.meeting,
+        fetchSummary: out.fetchSummary,
+        _debug: out._debug,
       });
+    } catch (e) {
+      const st = Number(e.status) || 500;
+      if (st === 422) {
+        return res.status(422).json({
+          error: e.message,
+          fetchSummary: e.fetchSummary,
+        });
+      }
+      if (st === 502 && e.raw) {
+        return res.status(502).json({ error: e.message, raw: e.raw });
+      }
+      if (st === 502) {
+        return res.status(502).json({ error: e.message });
+      }
+      throw e;
     }
-    const out = { research, meeting, fetchSummary: { ...fetchSummary, fallbackFromUrl } };
-    if (debugPrompts) {
-      out._debug = {
-        parsePasteSystemPrompt: PARSE_PASTE_SYSTEM_PROMPT,
-        userMessageChars: raw.length,
-        modelInputChars: textForModel.length,
-        urlFetch: fetchResults,
-        fallbackFromUrl,
-      };
-    }
-    res.json(out);
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+/** Enqueue identify-and-save work; persists on server so closing the tab does not lose the run. */
+app.post("/api/ai/parse-paste-jobs", (req, res) => {
+  try {
+    const raw = (req.body && req.body.rawText) || "";
+    if (!String(raw).trim()) return res.status(400).json({ error: "rawText required" });
+    const debugPrompts = Boolean(req.body?.debugPrompts);
+    const sourceImage =
+      typeof req.body?.sourceImage === "string" && req.body.sourceImage.length > 0
+        ? req.body.sourceImage
+        : undefined;
+    const payload = { rawText: String(raw), debugPrompts };
+    if (sourceImage) payload.sourceImage = sourceImage;
+    const job = aiJobs.create({
+      kind: "parse_paste",
+      payload,
+    });
+    enqueueParsePasteJob(job.id);
+    res.status(202).json({ job_id: job.id, status: job.status });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/ai/jobs", (req, res) => {
+  try {
+    const kind = typeof req.query.kind === "string" ? req.query.kind : undefined;
+    const statusParam = typeof req.query.status === "string" ? req.query.status : "";
+    const statuses = statusParam
+      ? statusParam.split(",").map((s) => s.trim()).filter(Boolean)
+      : undefined;
+    const limit = req.query.limit ? Number(req.query.limit) : 100;
+    const rows = aiJobs.list({ kind, statuses, limit });
+    res.json({ jobs: rows });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/ai/jobs/:id", (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const job = aiJobs.getById(id);
+    if (!job) return res.status(404).json({ error: "Not found" });
+    res.json(job);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/ai/jobs/:id", (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const ok = aiJobs.delete(id);
+    if (!ok) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -859,3 +1192,4 @@ server.on("error", (err) => {
   }
   throw err;
 });
+

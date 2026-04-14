@@ -13,84 +13,22 @@
     </header>
 
     <main class="container">
-        <!-- Upload Section -->
         <section class="card upload-section">
             <label for="receipt-upload" class="upload-btn">
                 <span class="icon">📷</span>
-                <span data-i18n="upload_btn">拍照 / 上傳收據 (Upload Receipt)</span>
+                <span data-i18n="upload_btn">Snap / Upload Receipt(s)</span>
             </label>
-            <input type="file" id="receipt-upload" accept="image/*" capture="environment" style="display: none;">
-            <div id="loading" class="hidden" data-i18n="analyzing">分析中，請稍候... (Analyzing...)</div>
+            <input type="file" id="receipt-upload" accept="image/*" capture="environment" multiple style="display: none;">
+            <div id="loading" class="hidden" data-i18n="analyzing">Analyzing…</div>
         </section>
 
-        <!-- Form Section (Hidden initially) -->
-        <section id="form-section" class="card hidden">
-            <h2 data-i18n="confirm_title">確認資料 (Confirm Data)</h2>
-            <img id="preview-image" src="" alt="Receipt Preview">
+        <div id="receipt-jobs"></div>
 
-            <form id="expense-form">
-                <input type="hidden" id="image_path" name="image_path">
-
-                <div class="form-group">
-                    <label data-i18n="lbl_date">日期 (Date)</label>
-                    <input type="date" id="date" name="date" required>
-                </div>
-
-                <div class="form-row">
-                    <div class="form-group">
-                        <label data-i18n="lbl_currency">幣種 (Currency)</label>
-                        <select id="currency" name="currency">
-                            <option value="HKD">HKD</option>
-                            <option value="CNY">CNY</option>
-                            <option value="USD">USD</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="lbl_amount">金額 (Amount)</label>
-                        <input type="number" id="amount" name="amount" step="0.01" required>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label data-i18n="lbl_merchant">商戶 (Merchant)</label>
-                    <input type="text" id="merchant" name="merchant" required>
-                </div>
-
-                <div class="form-group">
-                    <label data-i18n="lbl_desc">內容 (Description)</label>
-                    <input type="text" id="description" name="description">
-                </div>
-
-                <div class="form-group">
-                    <label data-i18n="lbl_category">分類 (Category)</label>
-                    <select id="category" name="category">
-                        <option value="Groceries" data-i18n="cat_groceries">買菜 (Groceries)</option>
-                        <option value="Dining" data-i18n="cat_dining">餐飲 (Dining)</option>
-                        <option value="Transport" data-i18n="cat_transport">交通 (Transport)</option>
-                        <option value="Utilities" data-i18n="cat_utilities">水電煤 (Utilities)</option>
-                        <option value="Shopping" data-i18n="cat_shopping">購物 (Shopping)</option>
-                        <option value="Other" data-i18n="cat_other">其他 (Other)</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label data-i18n="lbl_note">備註 (Note)</label>
-                    <input type="text" id="note" name="note" placeholder="Optional">
-                </div>
-
-                <div class="form-actions">
-                    <button type="button" id="cancel-btn" class="btn btn-secondary" data-i18n="btn_cancel">取消 (Cancel)</button>
-                    <button type="submit" class="btn btn-primary" data-i18n="btn_save">儲存 (Save)</button>
-                </div>
-            </form>
-        </section>
-
-        <!-- Stats Section -->
         <section id="stats-section" class="card">
-            <h2 data-i18n="stats_title">本月開支 (This Month)</h2>
+            <h2 data-i18n="stats_title">This Month</h2>
             <ul id="stats-list" class="stats-list"></ul>
 
-            <h3 data-i18n="recent_title">最近紀錄 (Recent)</h3>
+            <h3 data-i18n="recent_title">Recent</h3>
             <ul id="recent-list" class="recent-list"></ul>
         </section>
     </main>

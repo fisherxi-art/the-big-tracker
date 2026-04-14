@@ -16,6 +16,35 @@ export type Research = {
   sourceImage: string;
 };
 
+export type AiJob = {
+  id: number;
+  kind: string;
+  status: string;
+  payload: Record<string, unknown>;
+  result: {
+    createdResearchIds?: number[];
+    createdMeetingId?: number | null;
+    fetchSummary?: {
+      urlFetchEnabled: boolean;
+      urlsDetected: number;
+      articlesExtracted: number;
+      extractedTotalChars: number;
+      perUrl: { url?: string; ok?: boolean; chars?: number; error?: string; title?: string }[];
+      fallbackFromUrl?: boolean;
+    };
+    debug?: {
+      parsePasteSystemPrompt?: string;
+      userMessageChars?: number;
+      modelInputChars?: number;
+    };
+    extracted?: Record<string, unknown>;
+    image_path?: string;
+  } | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type Meeting = {
   id: number;
   date: string;
@@ -189,6 +218,26 @@ export const api = {
           : null;
       return { research, meeting, debug: data._debug, fetchSummary: data.fetchSummary };
     },
+    /** Queue identify-and-save on the server; poll `getJob` until completed or failed. */
+    enqueueParsePaste: (rawText: string, opts?: { debugPrompts?: boolean; sourceImage?: string }) =>
+      j<{ job_id: number; status: string }>("/api/ai/parse-paste-jobs", {
+        method: "POST",
+        body: JSON.stringify({
+          rawText,
+          debugPrompts: opts?.debugPrompts === true,
+          ...(opts?.sourceImage ? { sourceImage: opts.sourceImage } : {}),
+        }),
+      }),
+    getJob: (id: number) => j<AiJob>(`/api/ai/jobs/${id}`),
+    listJobs: (opts?: { kind?: string; statuses?: string[]; limit?: number }) => {
+      const q = new URLSearchParams();
+      if (opts?.kind) q.set("kind", opts.kind);
+      if (opts?.statuses?.length) q.set("status", opts.statuses.join(","));
+      if (opts?.limit != null) q.set("limit", String(opts.limit));
+      const qs = q.toString();
+      return j<{ jobs: AiJob[] }>(`/api/ai/jobs${qs ? `?${qs}` : ""}`);
+    },
+    deleteJob: (id: number) => j<{ ok: boolean }>(`/api/ai/jobs/${id}`, { method: "DELETE" }),
     parseResearch: (rawText: string) =>
       j<Omit<Research, "id">>(`/api/ai/parse-research`, {
         method: "POST",
