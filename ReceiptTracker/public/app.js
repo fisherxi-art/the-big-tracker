@@ -274,10 +274,8 @@ function renderReceiptJobs(jobs) {
   const receiptJobs = (jobs || []).filter((j) => j.kind === "receipt");
   if (receiptJobs.length === 0) {
     el.innerHTML = "";
-    document.getElementById("stats-section").classList.remove("hidden");
     return;
   }
-  document.getElementById("stats-section").classList.add("hidden");
   const catMap = {
     Groceries: "Groceries",
     Dining: "Dining",
