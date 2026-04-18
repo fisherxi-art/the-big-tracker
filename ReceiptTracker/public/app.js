@@ -313,7 +313,19 @@ function renderReceiptJobs(jobs) {
         return `
         <section class="card receipt-job-card" data-job-id="${id}">
           <h2>${escAttr(t("confirm_title"))} #${id}</h2>
-          <img class="preview-image-job" src="${escAttr(image_path)}" alt="">
+          <details class="receipt-job-preview">
+            <summary class="receipt-job-preview-summary">
+              <img class="receipt-job-preview-thumb" src="${escAttr(image_path)}" alt="" width="72" height="72" loading="lazy">
+              <span class="receipt-job-preview-label">${escAttr(t("receipt_thumb_title"))}</span>
+            </summary>
+            <div class="receipt-job-preview-expanded-wrap">
+              <img class="receipt-job-preview-expanded" src="${escAttr(image_path)}" alt="">
+            </div>
+          </details>
+          <div class="receipt-job-line-items">
+            <h3 class="receipt-job-line-items-title">${escAttr(t("itemized_title"))}</h3>
+            ${renderExpenseItems(extracted.items)}
+          </div>
           <form class="expense-job-form" data-job-id="${id}">
             <input type="hidden" name="image_path" value="${escAttr(image_path)}">
             <input type="hidden" name="job_id" value="${id}">
