@@ -411,6 +411,61 @@ export function meetingsRepo(db) {
   };
 }
 
+/** Hong Kong civil date YYYY-MM-DD for "today" (chart week boundaries). */
+function hkTodayYmd() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Hong_Kong",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const y = parts.find((p) => p.type === "year")?.value;
+  const mo = parts.find((p) => p.type === "month")?.value;
+  const d = parts.find((p) => p.type === "day")?.value;
+  if (y && mo && d) return `${y}-${mo}-${d}`;
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** 0 = Sunday … 6 = Saturday (Gregorian civil date). */
+function civilDowSun0(y, m, d) {
+  return new Date(Date.UTC(y, m - 1, d, 12, 0, 0)).getUTCDay();
+}
+
+function ymdAddDays(ymd, deltaDays) {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const t = Date.UTC(y, m - 1, d + deltaDays, 12, 0, 0);
+  const dt = new Date(t);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
+}
+
+/** Week starts Thursday, ends Wednesday. Returns YYYY-MM-DD of that Thursday. */
+function thursdayWeekStartYmd(ymd) {
+  if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(String(ymd).trim())) return null;
+  const s = String(ymd).trim();
+  const [y, m, d] = s.split("-").map(Number);
+  const dow = civilDowSun0(y, m, d);
+  const daysSinceThu = (dow - 4 + 7) % 7;
+  return ymdAddDays(s, -daysSinceThu);
+}
+
+/** Approximate HKD for household chart; override with HOUSEHOLD_FX_* env. */
+function amountToHkdForChart(amount, currency) {
+  const raw = Number(amount);
+  if (!Number.isFinite(raw)) return 0;
+  const c = String(currency ?? "HKD")
+    .trim()
+    .toUpperCase();
+  const cny = Number(process.env.HOUSEHOLD_FX_CNY_HKD || 1.09);
+  const usd = Number(process.env.HOUSEHOLD_FX_USD_HKD || 7.8);
+  const rates = { HKD: 1, CNY: Number.isFinite(cny) ? cny : 1.09, USD: Number.isFinite(usd) ? usd : 7.8 };
+  const r = rates[c];
+  if (r == null || !Number.isFinite(r)) return raw;
+  return raw * r;
+}
+
 /** @param {DatabaseSync} db */
 export function expensesRepo(db) {
   const insertStmt = db.prepare(`
@@ -423,6 +478,12 @@ export function expensesRepo(db) {
     FROM expenses
     ORDER BY expense_date DESC, id DESC
     LIMIT 10
+  `);
+
+  const listSinceForChartStmt = db.prepare(`
+    SELECT expense_date, amount, currency
+    FROM expenses
+    WHERE expense_date != '' AND expense_date >= ?
   `);
 
   const monthlyStatsStmt = db.prepare(`
@@ -466,6 +527,7 @@ export function expensesRepo(db) {
   retainStatements(db, [
     insertStmt,
     listRecent,
+    listSinceForChartStmt,
     monthlyStatsStmt,
     getStmt,
     updateStmt,
@@ -601,6 +663,36 @@ export function expensesRepo(db) {
       return listItemsStmt.all(expenseId).map((r) => rowToExpenseItem(r)).filter(Boolean);
     },
 
+    /**
+     * Thu–Wed weeks (Asia/Hong_Kong "today"), totals converted to HKD for chart vs budget.
+     * @param {number} weekCount
+     */
+    weeklySpending(weekCount = 12) {
+      const n = Number(weekCount);
+      const weeks = Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 52) : 12;
+      const todayHk = hkTodayYmd();
+      const currentWeekStart = thursdayWeekStartYmd(todayHk);
+      if (!currentWeekStart) return [];
+      const firstWeekStart = ymdAddDays(currentWeekStart, -(weeks - 1) * 7);
+      /** @type {{ weekStart: string, weekEnd: string, totalHkd: number }[]} */
+      const buckets = [];
+      for (let i = 0; i < weeks; i++) {
+        const start = ymdAddDays(firstWeekStart, i * 7);
+        const end = ymdAddDays(start, 6);
+        buckets.push({ weekStart: start, weekEnd: end, totalHkd: 0 });
+      }
+      const idxByStart = new Map(buckets.map((b, i) => [b.weekStart, i]));
+      const rows = listSinceForChartStmt.all(firstWeekStart);
+      for (const row of rows) {
+        const ws = thursdayWeekStartYmd(row.expense_date);
+        if (!ws) continue;
+        const idx = idxByStart.get(ws);
+        if (idx === undefined) continue;
+        buckets[idx].totalHkd += amountToHkdForChart(row.amount, row.currency);
+      }
+      return buckets;
+    },
+
     stats() {
       const recent = listRecent.all().map((r) => rowToExpense(r));
       const monthlyStats = monthlyStatsStmt.all().map((r) => ({
@@ -608,7 +700,14 @@ export function expensesRepo(db) {
         total: Number(r.total ?? 0),
         currency: r.currency ?? "",
       }));
-      return { recent, monthlyStats };
+      const budgetRaw = Number(process.env.HOUSEHOLD_WEEKLY_BUDGET_HKD ?? 3000);
+      const weeklyBudgetHkd = Number.isFinite(budgetRaw) ? budgetRaw : 3000;
+      return {
+        recent,
+        monthlyStats,
+        weeklySpending: this.weeklySpending(12),
+        weeklyBudgetHkd,
+      };
     },
   };
 }

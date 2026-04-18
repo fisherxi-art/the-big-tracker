@@ -163,3 +163,45 @@ h2, h3 { margin-bottom: 12px; font-size: 18px; }
 .recent-items-table { width: 100%; border-collapse: collapse; font-size: 13px; color: var(--color-text); }
 .recent-items-table th, .recent-items-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--color-border); }
 .recent-items-table th { color: var(--color-text-muted); font-weight: 600; }
+
+.weekly-chart-card h2 { margin-bottom: 8px; }
+.weekly-chart-legend {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  margin-bottom: 8px;
+}
+.weekly-chart-host {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.weekly-chart-host svg {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+}
+.weekly-chart-host .weekly-bar {
+  fill: var(--color-primary);
+}
+.weekly-chart-host .weekly-bar--over {
+  fill: #b42318;
+}
+.weekly-chart-host .weekly-budget-line {
+  stroke: #c27a00;
+  stroke-width: 1.75;
+  stroke-dasharray: 6 4;
+}
+.weekly-chart-host .weekly-chart-label {
+  fill: var(--color-text-muted);
+  font-size: 8px;
+}
+.weekly-chart-host .weekly-y-label {
+  fill: var(--color-text-muted);
+  font-size: 9px;
+}
+.weekly-chart-host .weekly-budget-tag {
+  fill: #c27a00;
+  font-size: 9px;
+  font-weight: 600;
+}

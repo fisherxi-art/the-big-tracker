@@ -22,6 +22,8 @@ const dict = {
     cat_shopping: "購物",
     cat_other: "其他",
     stats_title: "本月開支總計",
+    weekly_chart_title: "每週開支（週四至週三）",
+    weekly_budget_legend: "每週預算線",
     recent_title: "最近紀錄",
     receipt_thumb_title: "查看收據圖片",
     btn_delete: "刪除",
@@ -58,6 +60,8 @@ const dict = {
     cat_shopping: "Shopping",
     cat_other: "Other",
     stats_title: "This Month's Spending",
+    weekly_chart_title: "Weekly spending (Thu–Wed)",
+    weekly_budget_legend: "Weekly budget line",
     recent_title: "Recent Records",
     receipt_thumb_title: "View receipt image",
     btn_delete: "Delete",
@@ -154,6 +158,68 @@ function currencyOptions(selected) {
   return `<option value="HKD"${cur === "HKD" ? " selected" : ""}>HKD</option>
                   <option value="CNY"${cur === "CNY" ? " selected" : ""}>CNY</option>
                   <option value="USD"${cur === "USD" ? " selected" : ""}>USD</option>`;
+}
+
+/**
+ * Bar chart: one bar per week (Thu–Wed), totals in HKD; dashed line = weekly budget.
+ * @param {{ weekStart: string, weekEnd: string, totalHkd: number }[]} weeklySpending
+ * @param {number} budgetHkd
+ */
+function renderWeeklyChart(weeklySpending, budgetHkd) {
+  const host = document.getElementById("weekly-chart");
+  const legend = document.getElementById("weekly-chart-legend");
+  if (!host) return;
+  if (!Array.isArray(weeklySpending) || weeklySpending.length === 0) {
+    host.innerHTML = "";
+    if (legend) legend.textContent = "";
+    return;
+  }
+  const budgetLine = Number(budgetHkd);
+  const budget = Number.isFinite(budgetLine) ? budgetLine : 3000;
+  if (legend) {
+    legend.textContent = `${t("weekly_budget_legend")}: ${budget.toFixed(0)} HKD`;
+  }
+  const W = 320;
+  const H = 236;
+  const padL = 40;
+  const padB = 52;
+  const padT = 12;
+  const padR = 40;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const maxSpend = Math.max(...weeklySpending.map((w) => Number(w.totalHkd) || 0), 0);
+  const maxY = Math.max(budget * 1.02, maxSpend * 1.08, 1);
+  const n = weeklySpending.length;
+  const gap = 3;
+  const barW = Math.max(2, (plotW - gap * (n - 1)) / n);
+  const y0 = padT + plotH;
+  let rects = "";
+  weeklySpending.forEach((w, i) => {
+    const total = Number(w.totalHkd) || 0;
+    const x = padL + i * (barW + gap);
+    const h = (total / maxY) * plotH;
+    const y = y0 - h;
+    const over = total > budget ? " weekly-bar--over" : "";
+    rects += `<rect class="weekly-bar${over}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(h, 0).toFixed(2)}" rx="2" />`;
+  });
+  const budgetY = y0 - (budget / maxY) * plotH;
+  const line = `<line class="weekly-budget-line" x1="${padL}" y1="${budgetY.toFixed(2)}" x2="${(W - padR).toFixed(2)}" y2="${budgetY.toFixed(2)}" />`;
+  const tagX = W - 2;
+  const tagY = Math.max(padT + 10, budgetY - 4);
+  const budgetTag = `<text class="weekly-budget-tag" x="${tagX}" y="${tagY.toFixed(2)}" text-anchor="end">${escAttr(budget.toFixed(0))}</text>`;
+  const labelPivotY = y0 + 4;
+  let xLabs = "";
+  weeklySpending.forEach((w, i) => {
+    const cx = padL + i * (barW + gap) + barW / 2;
+    const short = String(w.weekStart || "").slice(5);
+    const xf = cx.toFixed(2);
+    const yf = labelPivotY.toFixed(2);
+    xLabs += `<text class="weekly-chart-label" x="${xf}" y="${yf}" text-anchor="end" dominant-baseline="alphabetic" transform="rotate(-52 ${xf} ${yf})">${escAttr(short)}</text>`;
+  });
+  const yMaxLab = `<text class="weekly-y-label" x="${padL - 4}" y="${(padT + 10).toFixed(2)}" text-anchor="end">${escAttr(String(Math.round(maxY)))}</text>`;
+  const y0Lab = `<text class="weekly-y-label" x="${padL - 4}" y="${(y0 + 4).toFixed(2)}" text-anchor="end">0</text>`;
+  const aria = escAttr(t("weekly_chart_title"));
+  host.innerHTML = `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${aria}">${yMaxLab}${y0Lab}${rects}${line}${budgetTag}${xLabs}</svg>`;
 }
 
 function renderExpenseItems(items) {
@@ -568,6 +634,11 @@ async function loadStats() {
   try {
     const res = await fetch("/api/stats");
     const data = await res.json();
+
+    renderWeeklyChart(
+      Array.isArray(data.weeklySpending) ? data.weeklySpending : [],
+      data.weeklyBudgetHkd != null ? Number(data.weeklyBudgetHkd) : 3000
+    );
 
     const statsList = document.getElementById("stats-list");
     statsList.innerHTML = "";
