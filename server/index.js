@@ -30,6 +30,21 @@ function resolveDbPath() {
   return join(root, raw.replace(/^\.\//, ""));
 }
 
+/**
+ * Stored receipt files must survive deploys the same way SQLite does. If DATABASE_PATH
+ * is on a persistent volume but uploads stayed under the default DATA_DIR, images were
+ * lost on redeploy. Default: `receipt-uploads` next to the DB; override: RECEIPT_UPLOAD_DIR.
+ */
+function resolveReceiptUploadDir(absoluteDbPath) {
+  const raw = process.env.RECEIPT_UPLOAD_DIR;
+  if (String(raw || "").trim()) {
+    const r = String(raw).trim();
+    if (r.startsWith("/") || /^[A-Za-z]:[\\/]/.test(r)) return r;
+    return join(root, r.replace(/^\.\//, ""));
+  }
+  return join(dirname(absoluteDbPath), "receipt-uploads");
+}
+
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || "qwen/qwen3.5-flash-02-23";
 /**
@@ -54,7 +69,9 @@ function ensureDataDir() {
 
 const dbPath = resolveDbPath();
 ensureDataDir();
-const receiptUploadDir = join(DATA_DIR, "receipt-uploads");
+const dbDir = dirname(dbPath);
+if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
+const receiptUploadDir = resolveReceiptUploadDir(dbPath);
 if (!existsSync(receiptUploadDir)) mkdirSync(receiptUploadDir, { recursive: true });
 const db = openDb(dbPath);
 const research = researchRepo(db);
@@ -606,6 +623,7 @@ app.get("/api/health", (_, res) => {
     openrouter: Boolean(process.env.OPENROUTER_API_KEY),
     dataDir: DATA_DIR,
     database: dbPath,
+    receiptUploads: receiptUploadDir,
     openRouterModel: DEFAULT_MODEL,
     openRouterVisionModel: DEFAULT_VISION_MODEL,
     openRouterWebSearch: Boolean(openRouterWebPlugins()),
