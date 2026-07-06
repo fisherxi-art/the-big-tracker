@@ -473,11 +473,24 @@ export function expensesRepo(db) {
     VALUES (@expense_date, @amount, @currency, @merchant, @description, @category, @note, @image_path)
   `);
 
-  const listRecent = db.prepare(`
+  const listAll = db.prepare(`
     SELECT id, expense_date, amount, currency, merchant, description, category, note, image_path, created_at
     FROM expenses
     ORDER BY expense_date DESC, id DESC
-    LIMIT 10
+  `);
+
+  const listOldReceiptImagesStmt = db.prepare(`
+    SELECT id, image_path, expense_date, created_at
+    FROM expenses
+    WHERE TRIM(COALESCE(image_path, '')) != ''
+    AND (
+      (TRIM(COALESCE(expense_date, '')) != '' AND expense_date < @cutoff)
+      OR (TRIM(COALESCE(expense_date, '')) = '' AND date(created_at) < @cutoff)
+    )
+  `);
+
+  const clearReceiptImageStmt = db.prepare(`
+    UPDATE expenses SET image_path = '' WHERE id = ?
   `);
 
   const listSinceForChartStmt = db.prepare(`
@@ -533,7 +546,7 @@ export function expensesRepo(db) {
 
   retainStatements(db, [
     insertStmt,
-    listRecent,
+    listAll,
     listSinceForChartStmt,
     monthlyStatsStmt,
     getStmt,
@@ -543,6 +556,8 @@ export function expensesRepo(db) {
     deleteItemsStmt,
     listImagePathsStmt,
     countImagePathStmt,
+    listOldReceiptImagesStmt,
+    clearReceiptImageStmt,
     insertItemStmt,
   ]);
 
@@ -717,7 +732,7 @@ export function expensesRepo(db) {
     },
 
     stats() {
-      const recent = listRecent.all().map((r) => rowToExpense(r));
+      const records = listAll.all().map((r) => rowToExpense(r));
       const monthlyStats = monthlyStatsStmt.all().map((r) => ({
         category: r.category ?? "",
         total: Number(r.total ?? 0),
@@ -726,11 +741,28 @@ export function expensesRepo(db) {
       const budgetRaw = Number(process.env.HOUSEHOLD_WEEKLY_BUDGET_HKD ?? 3000);
       const weeklyBudgetHkd = Number.isFinite(budgetRaw) ? budgetRaw : 3000;
       return {
-        recent,
+        records,
         monthlyStats,
         weeklySpending: this.weeklySpending(12),
         weeklyBudgetHkd,
       };
+    },
+
+    /** Expenses with receipt images where expense_date (or created_at) is before cutoff YYYY-MM-DD. */
+    listWithReceiptImagesOlderThan(cutoffYmd) {
+      const cutoff = String(cutoffYmd ?? "").trim();
+      if (!cutoff) return [];
+      return listOldReceiptImagesStmt.all({ cutoff }).map((r) => ({
+        id: r.id,
+        image_path: r.image_path ?? "",
+        expense_date: r.expense_date ?? "",
+        created_at: r.created_at ?? "",
+      }));
+    },
+
+    clearReceiptImage(id) {
+      const r = clearReceiptImageStmt.run(id);
+      return r.changes > 0;
     },
   };
 }

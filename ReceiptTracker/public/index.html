@@ -30,12 +30,25 @@
             <div id="weekly-chart" class="weekly-chart-host"></div>
         </section>
 
+        <section id="storage-section" class="card storage-card">
+            <h2 data-i18n="storage_title">Storage</h2>
+            <p id="storage-summary" class="storage-summary"></p>
+            <div class="storage-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+                <div id="storage-bar-fill" class="storage-bar-fill"></div>
+            </div>
+            <button type="button" id="prune-receipt-photos" class="btn btn-secondary storage-prune-btn" data-i18n="prune_photos_btn">Delete photos older than 6 months</button>
+        </section>
+
         <section id="stats-section" class="card">
             <h2 data-i18n="stats_title">This Month</h2>
             <ul id="stats-list" class="stats-list"></ul>
+            <div id="category-items-panel" class="category-items-panel hidden" aria-live="polite">
+                <h4 id="category-items-heading" class="category-items-heading"></h4>
+                <ul id="category-items-list" class="category-items-list"></ul>
+            </div>
 
-            <h3 data-i18n="recent_title">Recent</h3>
-            <ul id="recent-list" class="recent-list"></ul>
+            <h3 data-i18n="records_title">All records</h3>
+            <ul id="recent-list" class="recent-list records-list"></ul>
         </section>
     </main>
 

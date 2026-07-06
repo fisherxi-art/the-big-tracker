@@ -25,6 +25,16 @@ const dict = {
     weekly_chart_title: "每週開支（週四至週三）",
     weekly_budget_legend: "每週預算線",
     recent_title: "最近紀錄",
+    records_title: "全部紀錄",
+    storage_title: "儲存空間",
+    storage_summary: "已用 {used} / {total} MB（收據照片 {receiptMb} MB，{receiptCount} 張）",
+    storage_summary_no_disk: "收據照片 {receiptMb} MB（{receiptCount} 張）",
+    prune_photos_btn: "刪除 6 個月前的收據照片",
+    confirm_prune_photos: "刪除 6 個月前的收據照片？開支紀錄會保留，但照片將永久移除。",
+    prune_done: "已移除 {files} 張照片（{records} 筆紀錄）。",
+    prune_none: "沒有 6 個月前的收據照片可刪除。",
+    category_items_heading: "本月 {label}（{currency}）",
+    category_items_empty: "本月此分類沒有紀錄。",
     receipt_thumb_title: "查看收據圖片",
     btn_delete: "刪除",
     /** Combined: open line items + edit form */
@@ -63,6 +73,16 @@ const dict = {
     weekly_chart_title: "Weekly spending (Thu–Wed)",
     weekly_budget_legend: "Weekly budget line",
     recent_title: "Recent Records",
+    records_title: "All records",
+    storage_title: "Storage",
+    storage_summary: "Using {used} / {total} MB (receipt photos {receiptMb} MB, {receiptCount} files)",
+    storage_summary_no_disk: "Receipt photos {receiptMb} MB ({receiptCount} files)",
+    prune_photos_btn: "Delete photos older than 6 months",
+    confirm_prune_photos: "Delete receipt photos older than 6 months? Expense records stay; photos are removed permanently.",
+    prune_done: "Removed {files} photo(s) from {records} record(s).",
+    prune_none: "No receipt photos older than 6 months to delete.",
+    category_items_heading: "{label} this month ({currency})",
+    category_items_empty: "No records in this category this month.",
     receipt_thumb_title: "View receipt image",
     btn_delete: "Delete",
     btn_details_edit: "Details / Edit",
@@ -100,6 +120,139 @@ document.getElementById("lang-toggle").addEventListener("click", () => {
 });
 
 let receiptPollTimer = null;
+let cachedExpenseRecords = [];
+let activeCategoryFilter = null;
+
+function isCurrentMonthExpenseDate(expenseDate) {
+  const s = String(expenseDate ?? "").trim();
+  const m = s.match(/^(\d{4})-(\d{1,2})/);
+  if (!m) return false;
+  const now = new Date();
+  return Number(m[1]) === now.getFullYear() && Number(m[2]) === now.getMonth() + 1;
+}
+
+function categoryFilterKey(category, currency) {
+  return `${category}\0${String(currency || "HKD").toUpperCase()}`;
+}
+
+function renderCategoryItemsPanel(category, currency, label) {
+  const panel = document.getElementById("category-items-panel");
+  const heading = document.getElementById("category-items-heading");
+  const list = document.getElementById("category-items-list");
+  if (!panel || !heading || !list) return;
+
+  const cur = String(currency || "HKD").toUpperCase();
+  const cat = normalizeExpenseCategory(category);
+  const items = cachedExpenseRecords
+    .filter(
+      (r) =>
+        isCurrentMonthExpenseDate(r.expense_date) &&
+        normalizeExpenseCategory(r.category) === cat &&
+        String(r.currency || "HKD").toUpperCase() === cur
+    )
+    .sort((a, b) => String(b.expense_date).localeCompare(String(a.expense_date)));
+
+  heading.textContent = formatTemplate(t("category_items_heading"), {
+    label,
+    currency: cur,
+  });
+
+  if (items.length === 0) {
+    list.innerHTML = `<li class="category-items-empty">${escAttr(t("category_items_empty"))}</li>`;
+  } else {
+    list.innerHTML = items
+      .map((r) => {
+        const amt = typeof r.amount === "number" ? r.amount : Number(r.amount);
+        const amtStr = Number.isFinite(amt) ? amt.toFixed(2) : "";
+        const merchant = String(r.merchant || r.description || "").trim() || "—";
+        return `<li class="category-item">
+          <span class="category-item-date">${escAttr(r.expense_date)}</span>
+          <span class="category-item-merchant">${escAttr(merchant)}</span>
+          <span class="category-item-amount">${escAttr(cur)} ${escAttr(amtStr)}</span>
+        </li>`;
+      })
+      .join("");
+  }
+
+  panel.classList.remove("hidden");
+}
+
+function toggleCategoryItems(category, currency, label) {
+  const key = categoryFilterKey(category, currency);
+  const panel = document.getElementById("category-items-panel");
+  if (activeCategoryFilter === key) {
+    activeCategoryFilter = null;
+    panel?.classList.add("hidden");
+    document.querySelectorAll(".stats-category-btn.active").forEach((b) => b.classList.remove("active"));
+    return;
+  }
+  activeCategoryFilter = key;
+  document.querySelectorAll(".stats-category-btn").forEach((b) => {
+    b.classList.toggle(
+      "active",
+      b.dataset.category === category && String(b.dataset.currency || "").toUpperCase() === String(currency || "HKD").toUpperCase()
+    );
+  });
+  renderCategoryItemsPanel(category, currency, label);
+}
+
+document.getElementById("stats-list")?.addEventListener("click", (e) => {
+  const btn = e.target.closest(".stats-category-btn");
+  if (!btn) return;
+  toggleCategoryItems(btn.dataset.category, btn.dataset.currency, btn.textContent.trim());
+});
+
+function formatTemplate(template, vars) {
+  return String(template).replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ""));
+}
+
+function renderStorageSummary(storage) {
+  const el = document.getElementById("storage-summary");
+  const fill = document.getElementById("storage-bar-fill");
+  const bar = document.querySelector(".storage-bar");
+  if (!el || !storage) return;
+  const receiptMb = storage.receiptStorageMb ?? 0;
+  const receiptCount = storage.receiptFileCount ?? 0;
+  const used = storage.diskUsedMb;
+  const total = storage.diskTotalMb;
+  if (used != null && total != null && total > 0) {
+    el.textContent = formatTemplate(t("storage_summary"), {
+      used,
+      total,
+      receiptMb,
+      receiptCount,
+    });
+    const pct = Math.min(100, Math.max(0, (used / total) * 100));
+    if (fill) fill.style.width = `${pct.toFixed(1)}%`;
+    if (bar) {
+      bar.setAttribute("aria-valuenow", String(Math.round(pct)));
+      bar.setAttribute("aria-valuetext", `${used} MB of ${total} MB`);
+    }
+  } else {
+    el.textContent = formatTemplate(t("storage_summary_no_disk"), { receiptMb, receiptCount });
+    if (fill) fill.style.width = "0%";
+  }
+}
+
+async function pruneOldReceiptPhotos() {
+  if (!confirm(t("confirm_prune_photos"))) return;
+  try {
+    const res = await fetch("/api/household/prune-receipt-photos", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ months: 6 }),
+    });
+    const data = await readApiJson(res);
+    const files = data.filesRemoved ?? 0;
+    const records = data.recordsUpdated ?? 0;
+    alert(files > 0 ? formatTemplate(t("prune_done"), { files, records }) : t("prune_none"));
+    await loadStats();
+  } catch (err) {
+    alert(err.message || String(err));
+  }
+}
+
+document.getElementById("prune-receipt-photos")?.addEventListener("click", pruneOldReceiptPhotos);
 
 function escAttr(s) {
   return String(s ?? "")
@@ -663,18 +816,33 @@ async function loadStats() {
 
     const statsList = document.getElementById("stats-list");
     statsList.innerHTML = "";
+    activeCategoryFilter = null;
+    document.getElementById("category-items-panel")?.classList.add("hidden");
+
     data.monthlyStats.forEach((stat) => {
-      const catKey = "cat_" + stat.category.toLowerCase();
+      const normalizedCat = normalizeExpenseCategory(stat.category);
+      const catKey = "cat_" + normalizedCat.toLowerCase();
       const label = dict[currentLang][catKey] || stat.category;
-      statsList.innerHTML += `<li><span>${label}</span> <span>${stat.currency} ${stat.total.toFixed(2)}</span></li>`;
+      const cur = escAttr(stat.currency || "HKD");
+      statsList.innerHTML += `<li class="stats-row">
+        <button type="button" class="stats-category-btn" data-category="${escAttr(normalizedCat)}" data-currency="${cur}">${escAttr(label)}</button>
+        <span class="stats-row-total">${cur} ${stat.total.toFixed(2)}</span>
+      </li>`;
     });
     if (data.monthlyStats.length === 0) statsList.innerHTML = "<li>No records this month</li>";
 
-    const recentList = document.getElementById("recent-list");
-    recentList.innerHTML = "";
-    data.recent.forEach((r) => {
-      recentList.innerHTML += buildSavedExpenseRow(r);
+    renderStorageSummary(data.storage);
+
+    const recordsList = document.getElementById("recent-list");
+    recordsList.innerHTML = "";
+    const rows = Array.isArray(data.records) ? data.records : data.recent || [];
+    cachedExpenseRecords = rows;
+    rows.forEach((r) => {
+      recordsList.innerHTML += buildSavedExpenseRow(r);
     });
+    if (rows.length === 0) {
+      recordsList.innerHTML = `<li class="records-empty">${escAttr(currentLang === "zh" ? "尚無紀錄" : "No records yet")}</li>`;
+    }
   } catch (err) {
     console.error("Failed to load stats", err);
   }

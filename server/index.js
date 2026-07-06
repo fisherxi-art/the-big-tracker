@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statfsSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statfsSync, statSync, unlinkSync } from "fs";
 import { dirname, extname, join } from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
@@ -173,6 +173,56 @@ function diskUsageForPath(dirPath) {
   } catch {
     return null;
   }
+}
+
+function receiptFolderStorageBytes() {
+  if (!existsSync(receiptUploadDir)) return 0;
+  let total = 0;
+  for (const name of readdirSync(receiptUploadDir)) {
+    try {
+      total += statSync(join(receiptUploadDir, name)).size;
+    } catch {
+      /* ignore */
+    }
+  }
+  return total;
+}
+
+function getHouseholdStorageSummary() {
+  const disk = diskUsageForPath(dirname(dbPath));
+  const receiptFileCount = existsSync(receiptUploadDir) ? readdirSync(receiptUploadDir).length : 0;
+  const receiptBytes = receiptFolderStorageBytes();
+  const usedBytes = disk ? disk.totalBytes - disk.freeBytes : null;
+  return {
+    diskFreeMb: disk ? Math.round(disk.freeBytes / 1024 / 1024) : null,
+    diskTotalMb: disk ? Math.round(disk.totalBytes / 1024 / 1024) : null,
+    diskUsedMb: usedBytes != null ? Math.round(usedBytes / 1024 / 1024) : null,
+    receiptFileCount,
+    receiptStorageMb: Math.round((receiptBytes / 1024 / 1024) * 10) / 10,
+  };
+}
+
+function cutoffYmdMonthsAgo(months) {
+  const n = Number(months);
+  const m = Number.isFinite(n) && n > 0 ? Math.min(120, Math.floor(n)) : 6;
+  const d = new Date();
+  d.setMonth(d.getMonth() - m);
+  return { months: m, cutoffYmd: d.toISOString().slice(0, 10) };
+}
+
+/** Remove receipt image files for expenses older than N months; keep expense rows. */
+function pruneReceiptPhotosOlderThanMonths(months) {
+  const { months: m, cutoffYmd } = cutoffYmdMonthsAgo(months);
+  const rows = expenses.listWithReceiptImagesOlderThan(cutoffYmd);
+  let recordsUpdated = 0;
+  let filesRemoved = 0;
+  for (const row of rows) {
+    const fn = receiptFilenameFromImagePath(row.image_path);
+    if (!expenses.clearReceiptImage(row.id)) continue;
+    recordsUpdated++;
+    if (fn && unlinkReceiptFile(fn)) filesRemoved++;
+  }
+  return { months: m, cutoffYmd, recordsUpdated, filesRemoved };
 }
 
 function formatEnospcMessage() {
@@ -770,17 +820,13 @@ app.use(cors());
 app.use(express.json({ limit: "12mb" }));
 
 app.get("/api/health", (_, res) => {
-  const disk = diskUsageForPath(dirname(dbPath));
-  const receiptFiles = existsSync(receiptUploadDir) ? readdirSync(receiptUploadDir).length : 0;
   res.json({
     ok: true,
     openrouter: Boolean(process.env.OPENROUTER_API_KEY),
     dataDir: DATA_DIR,
     database: dbPath,
     receiptUploads: receiptUploadDir,
-    receiptFileCount: receiptFiles,
-    diskFreeMb: disk ? Math.round(disk.freeBytes / 1024 / 1024) : null,
-    diskTotalMb: disk ? Math.round(disk.totalBytes / 1024 / 1024) : null,
+    ...getHouseholdStorageSummary(),
     openRouterModel: DEFAULT_MODEL,
     openRouterVisionModel: DEFAULT_VISION_MODEL,
     openRouterWebSearch: Boolean(openRouterWebPlugins()),
@@ -1080,7 +1126,21 @@ app.post("/api/save", (req, res) => {
 
 app.get("/api/stats", (_, res) => {
   try {
-    res.json(expenses.stats());
+    res.json({ ...expenses.stats(), storage: getHouseholdStorageSummary() });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/household/prune-receipt-photos", (req, res) => {
+  try {
+    const months = req.body?.months ?? 6;
+    const result = pruneReceiptPhotosOlderThanMonths(months);
+    res.json({
+      ok: true,
+      ...result,
+      storage: getHouseholdStorageSummary(),
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
