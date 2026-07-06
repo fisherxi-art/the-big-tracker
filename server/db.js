@@ -467,17 +467,37 @@ function amountToHkdForChart(amount, currency) {
 }
 
 /** @param {DatabaseSync} db */
+/** DB category values that map to a normalized household category. */
+const EXPENSE_CATEGORY_DB_VALUES = {
+  Groceries: ["Groceries", "買菜"],
+  Dining: ["Dining", "餐飲"],
+  Transport: ["Transport"],
+  Utilities: ["Utilities"],
+  Shopping: ["Shopping"],
+  Other: ["Other"],
+};
+
+function expenseCategoryDbValues(normalized) {
+  const key = String(normalized ?? "").trim();
+  return EXPENSE_CATEGORY_DB_VALUES[key] || (key ? [key] : []);
+}
+
 export function expensesRepo(db) {
   const insertStmt = db.prepare(`
     INSERT INTO expenses (expense_date, amount, currency, merchant, description, category, note, image_path)
     VALUES (@expense_date, @amount, @currency, @merchant, @description, @category, @note, @image_path)
   `);
 
-  const listAll = db.prepare(`
+  const listPageStmt = db.prepare(`
     SELECT id, expense_date, amount, currency, merchant, description, category, note, image_path, created_at
     FROM expenses
     ORDER BY expense_date DESC, id DESC
+    LIMIT ? OFFSET ?
   `);
+
+  const countAllStmt = db.prepare(`SELECT COUNT(*) AS n FROM expenses`);
+
+  const currentMonthStmt = db.prepare(`SELECT strftime('%Y-%m', 'now') AS month`);
 
   const listOldReceiptImagesStmt = db.prepare(`
     SELECT id, image_path, expense_date, created_at
@@ -546,7 +566,9 @@ export function expensesRepo(db) {
 
   retainStatements(db, [
     insertStmt,
-    listAll,
+    listPageStmt,
+    countAllStmt,
+    currentMonthStmt,
     listSinceForChartStmt,
     monthlyStatsStmt,
     getStmt,
@@ -732,7 +754,6 @@ export function expensesRepo(db) {
     },
 
     stats() {
-      const records = listAll.all().map((r) => rowToExpense(r));
       const monthlyStats = monthlyStatsStmt.all().map((r) => ({
         category: r.category ?? "",
         total: Number(r.total ?? 0),
@@ -740,12 +761,62 @@ export function expensesRepo(db) {
       }));
       const budgetRaw = Number(process.env.HOUSEHOLD_WEEKLY_BUDGET_HKD ?? 3000);
       const weeklyBudgetHkd = Number.isFinite(budgetRaw) ? budgetRaw : 3000;
+      const currentMonth = String(currentMonthStmt.get()?.month ?? "");
       return {
-        records,
         monthlyStats,
         weeklySpending: this.weeklySpending(12),
         weeklyBudgetHkd,
+        currentMonth,
       };
+    },
+
+    /**
+     * @param {{ limit?: number, offset?: number, month?: string, category?: string, currency?: string }} [opts]
+     */
+    list(opts = {}) {
+      const limit = Math.min(Math.max(Number(opts.limit) || 40, 1), 100);
+      const offset = Math.max(Number(opts.offset) || 0, 0);
+      const month = String(opts.month ?? "").trim();
+      const currency = String(opts.currency ?? "").trim().toUpperCase();
+      const category = String(opts.category ?? "").trim();
+      const hasFilter = month || currency || category;
+
+      if (!hasFilter) {
+        const total = Number(countAllStmt.get()?.n ?? 0);
+        const records = listPageStmt.all(limit, offset).map((r) => rowToExpense(r));
+        return { records, total, limit, offset };
+      }
+
+      const params = [];
+      let where = "WHERE 1=1";
+      if (month) {
+        where += " AND TRIM(COALESCE(expense_date, '')) != '' AND strftime('%Y-%m', expense_date) = ?";
+        params.push(month);
+      }
+      if (currency) {
+        where += " AND UPPER(TRIM(COALESCE(currency, 'HKD'))) = ?";
+        params.push(currency);
+      }
+      if (category) {
+        const cats = expenseCategoryDbValues(category);
+        if (cats.length) {
+          where += ` AND TRIM(COALESCE(category, '')) IN (${cats.map(() => "?").join(", ")})`;
+          params.push(...cats);
+        }
+      }
+      const countSql = `SELECT COUNT(*) AS n FROM expenses ${where}`;
+      const listSql = `
+        SELECT id, expense_date, amount, currency, merchant, description, category, note, image_path, created_at
+        FROM expenses ${where}
+        ORDER BY expense_date DESC, id DESC
+        LIMIT ? OFFSET ?
+      `;
+      const total = Number(db.prepare(countSql).get(...params)?.n ?? 0);
+      const records = db
+        .prepare(listSql)
+        .all(...params, limit, offset)
+        .map((r) => rowToExpense(r));
+      return { records, total, limit, offset };
     },
 
     /** Expenses with receipt images where expense_date (or created_at) is before cutoff YYYY-MM-DD. */

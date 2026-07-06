@@ -35,6 +35,7 @@ const dict = {
     prune_none: "沒有 6 個月前的收據照片可刪除。",
     category_items_heading: "本月 {label}（{currency}）",
     category_items_empty: "本月此分類沒有紀錄。",
+    load_more_records: "載入更多紀錄",
     receipt_thumb_title: "查看收據圖片",
     btn_delete: "刪除",
     /** Combined: open line items + edit form */
@@ -83,6 +84,7 @@ const dict = {
     prune_none: "No receipt photos older than 6 months to delete.",
     category_items_heading: "{label} this month ({currency})",
     category_items_empty: "No records in this category this month.",
+    load_more_records: "Load more records",
     receipt_thumb_title: "View receipt image",
     btn_delete: "Delete",
     btn_details_edit: "Details / Edit",
@@ -120,22 +122,18 @@ document.getElementById("lang-toggle").addEventListener("click", () => {
 });
 
 let receiptPollTimer = null;
-let cachedExpenseRecords = [];
 let activeCategoryFilter = null;
-
-function isCurrentMonthExpenseDate(expenseDate) {
-  const s = String(expenseDate ?? "").trim();
-  const m = s.match(/^(\d{4})-(\d{1,2})/);
-  if (!m) return false;
-  const now = new Date();
-  return Number(m[1]) === now.getFullYear() && Number(m[2]) === now.getMonth() + 1;
-}
+let statsCurrentMonth = "";
+const RECORDS_PAGE_SIZE = 40;
+let recordsOffset = 0;
+let recordsTotal = 0;
+let recordsLoading = false;
 
 function categoryFilterKey(category, currency) {
   return `${category}\0${String(currency || "HKD").toUpperCase()}`;
 }
 
-function renderCategoryItemsPanel(category, currency, label) {
+async function renderCategoryItemsPanel(category, currency, label) {
   const panel = document.getElementById("category-items-panel");
   const heading = document.getElementById("category-items-heading");
   const list = document.getElementById("category-items-list");
@@ -143,41 +141,43 @@ function renderCategoryItemsPanel(category, currency, label) {
 
   const cur = String(currency || "HKD").toUpperCase();
   const cat = normalizeExpenseCategory(category);
-  const items = cachedExpenseRecords
-    .filter(
-      (r) =>
-        isCurrentMonthExpenseDate(r.expense_date) &&
-        normalizeExpenseCategory(r.category) === cat &&
-        String(r.currency || "HKD").toUpperCase() === cur
-    )
-    .sort((a, b) => String(b.expense_date).localeCompare(String(a.expense_date)));
+  heading.textContent = formatTemplate(t("category_items_heading"), { label, currency: cur });
+  list.innerHTML = `<li class="category-items-empty">${escAttr(t("analyzing"))}</li>`;
+  panel.classList.remove("hidden");
 
-  heading.textContent = formatTemplate(t("category_items_heading"), {
-    label,
-    currency: cur,
-  });
-
-  if (items.length === 0) {
-    list.innerHTML = `<li class="category-items-empty">${escAttr(t("category_items_empty"))}</li>`;
-  } else {
-    list.innerHTML = items
-      .map((r) => {
-        const amt = typeof r.amount === "number" ? r.amount : Number(r.amount);
-        const amtStr = Number.isFinite(amt) ? amt.toFixed(2) : "";
-        const merchant = String(r.merchant || r.description || "").trim() || "—";
-        return `<li class="category-item">
+  try {
+    const params = new URLSearchParams({
+      month: statsCurrentMonth,
+      category: cat,
+      currency: cur,
+      limit: "100",
+      offset: "0",
+    });
+    const res = await fetch(`/api/expenses?${params}`);
+    const data = await readApiJson(res);
+    const items = data.records || [];
+    if (items.length === 0) {
+      list.innerHTML = `<li class="category-items-empty">${escAttr(t("category_items_empty"))}</li>`;
+    } else {
+      list.innerHTML = items
+        .map((r) => {
+          const amt = typeof r.amount === "number" ? r.amount : Number(r.amount);
+          const amtStr = Number.isFinite(amt) ? amt.toFixed(2) : "";
+          const merchant = String(r.merchant || r.description || "").trim() || "—";
+          return `<li class="category-item">
           <span class="category-item-date">${escAttr(r.expense_date)}</span>
           <span class="category-item-merchant">${escAttr(merchant)}</span>
           <span class="category-item-amount">${escAttr(cur)} ${escAttr(amtStr)}</span>
         </li>`;
-      })
-      .join("");
+        })
+        .join("");
+    }
+  } catch (err) {
+    list.innerHTML = `<li class="category-items-empty">${escAttr(err.message || String(err))}</li>`;
   }
-
-  panel.classList.remove("hidden");
 }
 
-function toggleCategoryItems(category, currency, label) {
+async function toggleCategoryItems(category, currency, label) {
   const key = categoryFilterKey(category, currency);
   const panel = document.getElementById("category-items-panel");
   if (activeCategoryFilter === key) {
@@ -195,6 +195,63 @@ function toggleCategoryItems(category, currency, label) {
   });
   renderCategoryItemsPanel(category, currency, label);
 }
+
+function updateLoadMoreButton() {
+  const btn = document.getElementById("load-more-records");
+  if (!btn) return;
+  const remaining = Math.max(0, recordsTotal - recordsOffset);
+  if (remaining <= 0) {
+    btn.classList.add("hidden");
+    return;
+  }
+  btn.classList.remove("hidden");
+  const base = t("load_more_records");
+  btn.textContent = `${base} (${remaining})`;
+}
+
+async function loadExpenseRecords({ reset = false } = {}) {
+  if (recordsLoading) return;
+  recordsLoading = true;
+  const btn = document.getElementById("load-more-records");
+  if (reset) {
+    recordsOffset = 0;
+    recordsTotal = 0;
+  }
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(
+      `/api/expenses?limit=${RECORDS_PAGE_SIZE}&offset=${recordsOffset}`
+    );
+    const data = await readApiJson(res);
+    const rows = data.records || [];
+    recordsTotal = Number(data.total) || 0;
+    const list = document.getElementById("recent-list");
+    if (!list) return;
+    if (reset) list.innerHTML = "";
+    if (reset && rows.length === 0) {
+      list.innerHTML = `<li class="records-empty">${escAttr(currentLang === "zh" ? "尚無紀錄" : "No records yet")}</li>`;
+    } else {
+      list.insertAdjacentHTML("beforeend", rows.map((r) => buildSavedExpenseRow(r)).join(""));
+    }
+    recordsOffset += rows.length;
+    updateLoadMoreButton();
+  } catch (err) {
+    console.error("loadExpenseRecords", err);
+    if (reset) {
+      const list = document.getElementById("recent-list");
+      if (list) {
+        list.innerHTML = `<li class="records-empty">${escAttr(err.message || String(err))}</li>`;
+      }
+    }
+  } finally {
+    recordsLoading = false;
+    if (btn) btn.disabled = false;
+  }
+}
+
+document.getElementById("load-more-records")?.addEventListener("click", () => {
+  void loadExpenseRecords();
+});
 
 document.getElementById("stats-list")?.addEventListener("click", (e) => {
   const btn = e.target.closest(".stats-category-btn");
@@ -833,16 +890,8 @@ async function loadStats() {
 
     renderStorageSummary(data.storage);
 
-    const recordsList = document.getElementById("recent-list");
-    recordsList.innerHTML = "";
-    const rows = Array.isArray(data.records) ? data.records : data.recent || [];
-    cachedExpenseRecords = rows;
-    rows.forEach((r) => {
-      recordsList.innerHTML += buildSavedExpenseRow(r);
-    });
-    if (rows.length === 0) {
-      recordsList.innerHTML = `<li class="records-empty">${escAttr(currentLang === "zh" ? "尚無紀錄" : "No records yet")}</li>`;
-    }
+    statsCurrentMonth = String(data.currentMonth || "");
+    await loadExpenseRecords({ reset: true });
   } catch (err) {
     console.error("Failed to load stats", err);
   }

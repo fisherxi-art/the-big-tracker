@@ -1146,6 +1146,19 @@ app.post("/api/household/prune-receipt-photos", (req, res) => {
   }
 });
 
+app.get("/api/expenses", (req, res) => {
+  try {
+    const limit = req.query.limit ? Number(req.query.limit) : 40;
+    const offset = req.query.offset ? Number(req.query.offset) : 0;
+    const month = typeof req.query.month === "string" ? req.query.month : undefined;
+    const category = typeof req.query.category === "string" ? req.query.category : undefined;
+    const currency = typeof req.query.currency === "string" ? req.query.currency : undefined;
+    res.json(expenses.list({ limit, offset, month, category, currency }));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/expenses/:id", (req, res) => {
   try {
     const id = Number(req.params.id);

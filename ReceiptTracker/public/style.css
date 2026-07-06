@@ -150,6 +150,9 @@ h2, h3 { margin-bottom: 12px; font-size: 18px; }
 .category-item-amount { font-weight: 600; white-space: nowrap; }
 .category-items-empty { color: var(--color-text-muted); font-size: 14px; padding: 4px 0; }
 
+.load-more-records { width: 100%; margin-top: 12px; }
+.load-more-records.hidden { display: none !important; }
+
 .records-list { max-height: none; }
 .records-empty { color: var(--color-text-muted); padding: 8px 0; list-style: none; }
 
