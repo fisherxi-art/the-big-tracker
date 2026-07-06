@@ -7,6 +7,7 @@ import { fileURLToPath } from "url";
 import multer from "multer";
 import { openDb, researchRepo, meetingsRepo, expensesRepo, aiJobsRepo } from "./db.js";
 import { augmentPasteForModel, extractHttpUrls, getLastFetchDebug } from "./urlExtract.js";
+import { compressReceiptForStorage } from "./receiptImage.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
@@ -19,9 +20,15 @@ if (process.env.NODE_ENV === "production" && !existsSync(distIndex)) {
 }
 const isProd = process.env.NODE_ENV === "production";
 
-const DATA_DIR = process.env.DATA_DIR
-  ? join(root, process.env.DATA_DIR.replace(/^\.\//, ""))
-  : join(root, "data");
+function resolveDataDir() {
+  const raw = process.env.DATA_DIR;
+  if (!raw) return join(root, "data");
+  const trimmed = String(raw).trim().replace(/^\.\//, "");
+  if (trimmed.startsWith("/") || /^[A-Za-z]:[\\/]/.test(trimmed)) return trimmed;
+  return join(root, trimmed);
+}
+
+const DATA_DIR = resolveDataDir();
 
 function resolveDbPath() {
   const raw = process.env.DATABASE_PATH;
@@ -678,7 +685,27 @@ async function processReceiptJob(jobId) {
     return;
   }
   const filePath = join(receiptUploadDir, filename);
-  const image_path = String(job.payload?.image_path ?? `/uploads/${filename}`);
+  let image_path = String(job.payload?.image_path ?? `/uploads/${filename}`);
+  let stored = null;
+
+  async function persistCompressed() {
+    if (!existsSync(filePath)) return null;
+    try {
+      stored = await compressReceiptForStorage(filePath);
+      image_path = stored.image_path;
+      const nextPayload = {
+        ...job.payload,
+        filename: stored.filename,
+        mimeType: stored.mimeType,
+        image_path: stored.image_path,
+      };
+      return nextPayload;
+    } catch (e) {
+      console.warn("compressReceiptForStorage", jobId, e.message || e);
+      return null;
+    }
+  }
+
   try {
     if (!existsSync(filePath)) {
       throw new Error("Receipt file not found on server");
@@ -693,8 +720,10 @@ async function processReceiptJob(jobId) {
     } catch {
       parsedData = {};
     }
+    const nextPayload = await persistCompressed();
     aiJobs.update(jobId, {
       status: "completed",
+      ...(nextPayload ? { payload: nextPayload } : {}),
       result: { extracted: parsedData, image_path },
       error: null,
     });
@@ -708,7 +737,13 @@ async function processReceiptJob(jobId) {
       noVision
         ? " Set OPENROUTER_VISION_MODEL to a vision-capable id from https://openrouter.ai/models (filter: image)."
         : "";
-    aiJobs.update(jobId, { status: "failed", error: msg + extra });
+    const nextPayload = await persistCompressed();
+    aiJobs.update(jobId, {
+      status: "failed",
+      ...(nextPayload ? { payload: nextPayload } : {}),
+      error: msg + extra,
+      result: image_path ? { image_path } : null,
+    });
   }
 }
 

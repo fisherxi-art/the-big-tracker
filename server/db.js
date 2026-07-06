@@ -747,6 +747,7 @@ export function aiJobsRepo(db) {
   const updateStmt = db.prepare(`
     UPDATE ai_jobs SET
       status = @status,
+      payload = @payload,
       result = @result,
       error = @error,
       updated_at = @updated_at
@@ -819,13 +820,17 @@ export function aiJobsRepo(db) {
     getById(id) {
       return rowToApi(getStmt.get(id));
     },
-    /** @param {number} id @param {{ status?: string, result?: object|null, error?: string|null }} fields */
+    /** @param {number} id @param {{ status?: string, payload?: object, result?: object|null, error?: string|null }} fields */
     update(id, fields) {
       const cur = getStmt.get(id);
       if (!cur) return null;
       const prev = rowToApi(cur);
       if (!prev) return null;
       const status = fields.status ?? prev.status;
+      const payloadJson =
+        fields.payload !== undefined
+          ? JSON.stringify(fields.payload ?? {})
+          : cur.payload ?? JSON.stringify(prev.payload ?? {});
       let resultJson = null;
       if (fields.result !== undefined) {
         resultJson = fields.result == null ? null : JSON.stringify(fields.result);
@@ -838,6 +843,7 @@ export function aiJobsRepo(db) {
       updateStmt.run({
         id,
         status,
+        payload: payloadJson,
         result: resultJson,
         error: err,
         updated_at: ts,
