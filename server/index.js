@@ -124,12 +124,36 @@ async function withAiSlot(fn) {
   }
 }
 
+const RECEIPT_MAX_BYTES = 15 * 1024 * 1024;
+
 const receiptUpload = multer({
   storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, receiptUploadDir),
+    destination: (_req, _file, cb) => {
+      try {
+        if (!existsSync(receiptUploadDir)) mkdirSync(receiptUploadDir, { recursive: true });
+        cb(null, receiptUploadDir);
+      } catch (e) {
+        cb(e);
+      }
+    },
     filename: (_req, file, cb) => cb(null, `${Date.now()}${extname(file.originalname)}`),
   }),
+  limits: { fileSize: RECEIPT_MAX_BYTES },
 });
+
+/** Multer errors otherwise become Express HTML 500 pages; Safari then throws on res.json(). */
+function handleReceiptUpload(req, res, next) {
+  receiptUpload.single("receipt")(req, res, (err) => {
+    if (!err) return next();
+    const status = err instanceof multer.MulterError ? 400 : 500;
+    let msg = err.message || "Upload failed";
+    if (err instanceof multer.MulterError) {
+      if (err.code === "LIMIT_FILE_SIZE") msg = "Image is too large (max 15 MB)";
+      else if (err.code === "LIMIT_UNEXPECTED_FILE") msg = "Unexpected upload field";
+    }
+    return res.status(status).json({ error: msg });
+  });
+}
 
 async function fetchOpenRouterChatCompletion(body) {
   const key = process.env.OPENROUTER_API_KEY;
@@ -833,7 +857,7 @@ app.delete("/api/meetings/:id", (req, res) => {
   }
 });
 
-app.post("/api/upload", receiptUpload.single("receipt"), async (req, res) => {
+app.post("/api/upload", handleReceiptUpload, async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "No image uploaded" });
     const mimeType = String(req.file.mimetype || "image/jpeg").slice(0, 120);
@@ -843,7 +867,13 @@ app.post("/api/upload", receiptUpload.single("receipt"), async (req, res) => {
       } catch {
         /* ignore */
       }
-      return res.status(400).json({ error: "Unsupported image type (use PNG, JPEG, GIF, or WebP)" });
+      const heic = /^image\/hei[cf]$/i.test(mimeType);
+      const hint = heic
+        ? " iPhone photos are often HEIC — use Settings → Camera → Formats → Most Compatible, or pick a JPEG/PNG from Photos."
+        : "";
+      return res.status(400).json({
+        error: `Unsupported image type (use PNG, JPEG, GIF, or WebP).${hint}`,
+      });
     }
     const filename = req.file.filename;
     const image_path = `/uploads/${filename}`;
@@ -1154,6 +1184,15 @@ app.use((req, res, next) => {
     });
   }
   next();
+});
+
+/** JSON errors for /api — avoids HTML error pages that break Safari response.json(). */
+app.use((err, req, res, next) => {
+  if (!req.path.startsWith("/api")) return next(err);
+  const msg = err?.message || String(err);
+  console.error("API error", req.method, req.originalUrl, err);
+  const status = Number(err?.status) || 500;
+  res.status(status).json({ error: msg });
 });
 
 /** Only redirect bare `/household`; `app.get("/household")` would also match `/household/` with strict routing off and loop 302. */

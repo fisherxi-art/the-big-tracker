@@ -108,6 +108,28 @@ function escAttr(s) {
     .replace(/</g, "&lt;");
 }
 
+/** Safari throws "The string did not match the expected pattern" when res.json() hits HTML/plain text. */
+async function readApiJson(res) {
+  const text = await res.text();
+  if (!text.trim()) {
+    if (!res.ok) throw new Error(`Request failed (${res.status})`);
+    return {};
+  }
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    const html = /^\s*</.test(text);
+    throw new Error(
+      html
+        ? `Server error (${res.status}) — try again or check server logs`
+        : `Invalid server response (${res.status})`
+    );
+  }
+  if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`);
+  return data;
+}
+
 /** `input[type=date]` requires YYYY-MM-DD; DB values may be unpadded. */
 function formatDateForInput(v) {
   if (v == null || v === "") return "";
@@ -505,16 +527,15 @@ document.getElementById("receipt-jobs").addEventListener("submit", async (e) => 
 });
 
 document.getElementById("receipt-upload").addEventListener("change", async (e) => {
-  const files = Array.from(e.target.files || []);
+  const files = Array.from(e.target.files || []).filter((f) => f && f.size > 0);
   if (!files.length) return;
   document.getElementById("loading").classList.remove("hidden");
   try {
     for (const file of files) {
       const formData = new FormData();
-      formData.append("receipt", file);
+      formData.append("receipt", file, file.name || "receipt.jpg");
       const res = await fetch("/api/upload", { method: "POST", body: formData });
-      const data = await res.json();
-      if (data.error) throw new Error(data.error);
+      await readApiJson(res);
     }
     await loadReceiptJobs();
   } catch (err) {
