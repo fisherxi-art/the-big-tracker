@@ -15,7 +15,7 @@ services:
     disk:
       name: data
       mountPath: /var/data
-      sizeGB: 1
+      sizeGB: 5
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /api/health

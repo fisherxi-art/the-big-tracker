@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import express from "express";
 import cors from "cors";
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statfsSync, unlinkSync } from "fs";
 import { dirname, extname, join } from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
@@ -91,6 +91,97 @@ function resumePendingAiJobs() {
 }
 resumePendingAiJobs();
 
+function receiptFilenameFromImagePath(imagePath) {
+  const s = String(imagePath ?? "").trim();
+  const m = s.match(/\/uploads\/([^/?#]+)$/);
+  return m ? m[1] : null;
+}
+
+function receiptFilenameFromJob(job) {
+  if (!job || job.kind !== "receipt") return null;
+  const direct = String(job.payload?.filename ?? "").trim();
+  if (direct) return direct;
+  return (
+    receiptFilenameFromImagePath(job.payload?.image_path) ||
+    receiptFilenameFromImagePath(job.result?.image_path)
+  );
+}
+
+function unlinkReceiptFile(filename) {
+  const name = String(filename ?? "").trim();
+  if (!name || name.includes("/") || name.includes("..")) return false;
+  const filePath = join(receiptUploadDir, name);
+  try {
+    if (existsSync(filePath)) unlinkSync(filePath);
+    return true;
+  } catch (e) {
+    console.warn("unlinkReceiptFile", name, e.message || e);
+    return false;
+  }
+}
+
+/** Delete upload file when no saved expense and no receipt job still references it. */
+function tryDeleteReceiptFile(filename) {
+  const name = String(filename ?? "").trim();
+  if (!name) return;
+  const imagePath = `/uploads/${name}`;
+  if (expenses.isImagePathInUse(imagePath)) return;
+  if (aiJobs.isReceiptFilenameReferenced(name)) return;
+  unlinkReceiptFile(name);
+}
+
+function collectReferencedReceiptFilenames() {
+  const refs = new Set();
+  for (const path of expenses.listImagePaths()) {
+    const fn = receiptFilenameFromImagePath(path);
+    if (fn) refs.add(fn);
+  }
+  for (const fn of aiJobs.listReceiptFilenames()) {
+    if (fn) refs.add(fn);
+  }
+  return refs;
+}
+
+/** Remove receipt images with no DB reference (e.g. dismissed drafts, failed uploads). */
+function purgeOrphanReceiptUploads() {
+  if (!existsSync(receiptUploadDir)) return 0;
+  const refs = collectReferencedReceiptFilenames();
+  let removed = 0;
+  for (const name of readdirSync(receiptUploadDir)) {
+    if (refs.has(name)) continue;
+    if (unlinkReceiptFile(name)) removed++;
+  }
+  if (removed > 0) {
+    console.log(`Purged ${removed} orphan receipt file(s) from ${receiptUploadDir}`);
+  }
+  return removed;
+}
+
+function diskUsageForPath(dirPath) {
+  try {
+    const s = statfsSync(dirPath);
+    const totalBytes = Number(s.blocks) * Number(s.bsize);
+    const freeBytes = Number(s.bavail) * Number(s.bsize);
+    return { totalBytes, freeBytes };
+  } catch {
+    return null;
+  }
+}
+
+function formatEnospcMessage() {
+  return "Server storage is full. Dismiss old receipt drafts on the household page, delete unneeded expenses with images, or increase disk size in hosting settings.";
+}
+
+const purgedOrphans = purgeOrphanReceiptUploads();
+if (purgedOrphans > 0) {
+  const usage = diskUsageForPath(dirname(dbPath));
+  if (usage) {
+    console.log(
+      `Disk free after purge: ${(usage.freeBytes / 1024 / 1024).toFixed(1)} MB of ${(usage.totalBytes / 1024 / 1024).toFixed(1)} MB`
+    );
+  }
+}
+
 const AI_JOB_CONCURRENCY = Math.min(
   8,
   Math.max(1, Number(process.env.AI_JOB_CONCURRENCY) || 2)
@@ -150,6 +241,8 @@ function handleReceiptUpload(req, res, next) {
     if (err instanceof multer.MulterError) {
       if (err.code === "LIMIT_FILE_SIZE") msg = "Image is too large (max 15 MB)";
       else if (err.code === "LIMIT_UNEXPECTED_FILE") msg = "Unexpected upload field";
+    } else if (err.code === "ENOSPC" || /no space left on device/i.test(msg)) {
+      msg = formatEnospcMessage();
     }
     return res.status(status).json({ error: msg });
   });
@@ -642,12 +735,17 @@ app.use(cors());
 app.use(express.json({ limit: "12mb" }));
 
 app.get("/api/health", (_, res) => {
+  const disk = diskUsageForPath(dirname(dbPath));
+  const receiptFiles = existsSync(receiptUploadDir) ? readdirSync(receiptUploadDir).length : 0;
   res.json({
     ok: true,
     openrouter: Boolean(process.env.OPENROUTER_API_KEY),
     dataDir: DATA_DIR,
     database: dbPath,
     receiptUploads: receiptUploadDir,
+    receiptFileCount: receiptFiles,
+    diskFreeMb: disk ? Math.round(disk.freeBytes / 1024 / 1024) : null,
+    diskTotalMb: disk ? Math.round(disk.totalBytes / 1024 / 1024) : null,
     openRouterModel: DEFAULT_MODEL,
     openRouterVisionModel: DEFAULT_VISION_MODEL,
     openRouterWebSearch: Boolean(openRouterWebPlugins()),
@@ -895,7 +993,10 @@ app.post("/api/upload", handleReceiptUpload, async (req, res) => {
         /* ignore */
       }
     }
-    const msg = e.message || String(e);
+    const msg =
+      e.code === "ENOSPC" || /no space left on device/i.test(e.message || String(e))
+        ? formatEnospcMessage()
+        : e.message || String(e);
     res.status(500).json({ error: msg });
   }
 });
@@ -990,8 +1091,11 @@ app.put("/api/expenses/:id", (req, res) => {
 app.delete("/api/expenses/:id", (req, res) => {
   try {
     const id = Number(req.params.id);
-    const ok = expenses.delete(id);
-    if (!ok) return res.status(404).json({ error: "Not found" });
+    const row = expenses.getById(id);
+    if (!row) return res.status(404).json({ error: "Not found" });
+    expenses.delete(id);
+    const fn = receiptFilenameFromImagePath(row.image_path);
+    if (fn) tryDeleteReceiptFile(fn);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1128,8 +1232,11 @@ app.get("/api/ai/jobs/:id", (req, res) => {
 app.delete("/api/ai/jobs/:id", (req, res) => {
   try {
     const id = Number(req.params.id);
-    const ok = aiJobs.delete(id);
-    if (!ok) return res.status(404).json({ error: "Not found" });
+    const job = aiJobs.getById(id);
+    if (!job) return res.status(404).json({ error: "Not found" });
+    const filename = receiptFilenameFromJob(job);
+    aiJobs.delete(id);
+    if (filename) tryDeleteReceiptFile(filename);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -1189,7 +1296,10 @@ app.use((req, res, next) => {
 /** JSON errors for /api — avoids HTML error pages that break Safari response.json(). */
 app.use((err, req, res, next) => {
   if (!req.path.startsWith("/api")) return next(err);
-  const msg = err?.message || String(err);
+  let msg = err?.message || String(err);
+  if (err?.code === "ENOSPC" || /no space left on device/i.test(msg)) {
+    msg = formatEnospcMessage();
+  }
   console.error("API error", req.method, req.originalUrl, err);
   const status = Number(err?.status) || 500;
   res.status(status).json({ error: msg });

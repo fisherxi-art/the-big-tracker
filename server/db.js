@@ -519,6 +519,13 @@ export function expensesRepo(db) {
     ORDER BY id ASC
   `);
   const deleteItemsStmt = db.prepare(`DELETE FROM expense_items WHERE expense_id = ?`);
+  const listImagePathsStmt = db.prepare(`
+    SELECT image_path FROM expenses
+    WHERE image_path IS NOT NULL AND TRIM(image_path) != ''
+  `);
+  const countImagePathStmt = db.prepare(`
+    SELECT COUNT(*) AS n FROM expenses WHERE image_path = ?
+  `);
   const insertItemStmt = db.prepare(`
     INSERT INTO expense_items (expense_id, item_name, amount, category)
     VALUES (@expense_id, @item_name, @amount, @category)
@@ -534,6 +541,8 @@ export function expensesRepo(db) {
     deleteStmt,
     listItemsStmt,
     deleteItemsStmt,
+    listImagePathsStmt,
+    countImagePathStmt,
     insertItemStmt,
   ]);
 
@@ -663,6 +672,20 @@ export function expensesRepo(db) {
       return listItemsStmt.all(expenseId).map((r) => rowToExpenseItem(r)).filter(Boolean);
     },
 
+    listImagePaths() {
+      return listImagePathsStmt
+        .all()
+        .map((r) => String(r.image_path ?? "").trim())
+        .filter(Boolean);
+    },
+
+    isImagePathInUse(imagePath) {
+      const p = String(imagePath ?? "").trim();
+      if (!p) return false;
+      const row = countImagePathStmt.get(p);
+      return Number(row?.n) > 0;
+    },
+
     /**
      * Thu–Wed weeks (Asia/Hong_Kong "today"), totals converted to HKD for chart vs budget.
      * @param {number} weekCount
@@ -736,8 +759,17 @@ export function aiJobsRepo(db) {
   const claimPendingStmt = db.prepare(`
     UPDATE ai_jobs SET status = 'processing', updated_at = ? WHERE id = ? AND status = 'pending'
   `);
+  const listReceiptPayloadsStmt = db.prepare(`
+    SELECT payload FROM ai_jobs WHERE kind = 'receipt'
+  `);
+  const countReceiptFilenameStmt = db.prepare(`
+    SELECT COUNT(*) AS n FROM ai_jobs
+    WHERE kind = 'receipt' AND (
+      payload LIKE @needle1 OR payload LIKE @needle2
+    )
+  `);
 
-  retainStatements(db, [insertStmt, getStmt, updateStmt, delStmt, listRecentStmt, claimPendingStmt]);
+  retainStatements(db, [insertStmt, getStmt, updateStmt, delStmt, listRecentStmt, claimPendingStmt, listReceiptPayloadsStmt, countReceiptFilenameStmt]);
 
   function rowToApi(r) {
     if (!r) return null;
@@ -833,6 +865,34 @@ export function aiJobsRepo(db) {
       if (opts.statuses?.length)
         out = out.filter((j) => opts.statuses.includes(j.status));
       return out;
+    },
+    listReceiptFilenames() {
+      const names = [];
+      for (const row of listReceiptPayloadsStmt.all()) {
+        let payload = {};
+        try {
+          payload = row.payload ? JSON.parse(String(row.payload)) : {};
+        } catch {
+          payload = {};
+        }
+        const direct = String(payload.filename ?? "").trim();
+        if (direct) {
+          names.push(direct);
+          continue;
+        }
+        const fromPath = String(payload.image_path ?? "").match(/\/uploads\/([^/?#]+)$/);
+        if (fromPath) names.push(fromPath[1]);
+      }
+      return names;
+    },
+    isReceiptFilenameReferenced(filename) {
+      const name = String(filename ?? "").trim();
+      if (!name) return false;
+      const row = countReceiptFilenameStmt.get({
+        needle1: `%"filename":"${name}"%`,
+        needle2: `%/uploads/${name}"%`,
+      });
+      return Number(row?.n) > 0;
     },
     /** Mark interrupted server runs as pending so workers can retry. */
     resetStaleProcessing() {
